@@ -9,6 +9,7 @@ DATABASE = "ievalue_metadata.db"
 def dict_factory(cursor, row):
     d = {}
     for idx, col in enumerate(cursor.description):
+        # we could do something here like if the first value is x, set this as a particular data type
         d[col[0]] = row[idx]
     return d
 
@@ -31,10 +32,6 @@ class IevalueDB:
         self._cur.execute(
             """CREATE TABLE hits
                        (query text, hit text, evalue float, the_rest text)"""
-        )
-        self._cur.execute(
-            """CREATE TABLE temp_fix_first_db_residue
-                       (residue int)"""
         )
         self._con.commit()
 
@@ -68,13 +65,6 @@ class IevalueDB:
 
     def add_database_record(self, new_databases: list[DatabaseData]) -> None:
         self._cur.executemany("INSERT INTO databases VALUES (:database_name, :residue)", new_databases)
-        self._con.commit()
-
-    def get_first_residue(self):
-        return self._cur.execute("SELECT * FROM temp_fix_first_db_residue").fetchone()
-
-    def set_first_residues(self, residue):
-        self._cur.execute("INSERT INTO temp_fix_first_db_residue VALUES (:residue)", {"residue": residue})
         self._con.commit()
 
     def __del__(self) -> None:

@@ -124,16 +124,8 @@ def get_updated_evalues(hits, total_residues, partial_residues) -> list[HitData]
         hit = hit.copy()  # this currently doesn't matter, but might prevent unexpected behavior in the future
         scaling_factor = (1.0 * total_residues) / (1.0 * partial_residues)
         evalue = float(hit["evalue"]) * scaling_factor
-
-        # JUST FOR TESTING
-        if hit["query"] == "WP_116116250.1" and hit["hit"] == "WP_013133213.1":
-            # breakpoint()
-            print("bbb", hit["evalue"], evalue)
-
         hit["evalue"] = evalue
         updates.append(hit)
-    # print("aaa ", total_residues, partial_residues)
-    # print("aaa ", scaling_factor)
 
     return updates
 
@@ -172,7 +164,7 @@ def write_updated_output(query_file_name: str, out_file_name: str, db, updated_e
                     # TODO DON'T HARD CODE THIS, GET IT FROM KWARGS
                     if evalue <= 10:
                         the_rest = hit["the_rest"].split("\t")
-                        all_values = [query, hit["hit"]] + the_rest[:-1] + [f"{evalue:.2}"] + [the_rest[-1]]
+                        all_values = [query, hit["hit"]] + the_rest[:-1] + [f"{evalue:.3}"] + [the_rest[-1]]
                         print("\t".join(all_values), file=out_f)
 
 
@@ -197,6 +189,7 @@ def main(program_call: str) -> None:
     prev_dbs, prev_residues = [], 0
     if prev_data := db.get_db_info():
         prev_dbs = [db_data["database"] for db_data in prev_data]  # type: ignore
+        print([db_data["residue"] for db_data in prev_data])
         prev_residues = sum([db_data["residue"] for db_data in prev_data])  # type: ignore
 
     # dbs that have not been searched on yet
@@ -207,6 +200,7 @@ def main(program_call: str) -> None:
         return
 
     delta_data = get_delta_sizes(delta_parts)
+    print(delta_data)
 
     # add the size of the residues for each database
     db.add_database_record(delta_data)
@@ -218,12 +212,8 @@ def main(program_call: str) -> None:
     # TODO better explain the math here
     # we need the total size of the previous and delta residue
     # we also need that number minus the size of the residue of the original database
-    first_residue = db.get_first_residue()
-    if not first_residue:
-        db.set_first_residues(delta_residue)
-    else:
-        prev_residues = first_residue["residue"]
-        delta_residue = total_residues - prev_residues
+    #(707856  +707808+ 732107)/732107
+    #delta_residue = total_residues - prev_residues
 
     # update the evalues
     # TODO, this currently starts failing at the third database increment
@@ -231,15 +221,16 @@ def main(program_call: str) -> None:
     if prev_residues:
         hits = db.get_all_hits()
         prev_updated_evalues = get_updated_evalues(hits, total_residues, prev_residues)
+        db.update_evalues(prev_updated_evalues)
 
     # perform blast on just the new dbs
     do_delta_blast(blast_kwargs, delta_dbs)
 
     # get the new results and add them to the database
     delta_hits = parse_delta_db(blast_kwargs["out"])
-    db.insert_hits(delta_hits)
 
     delta_updated_evalue_hits = get_updated_evalues(delta_hits, total_residues, delta_residue)
+    db.insert_hits(delta_updated_evalue_hits)
 
     updated_evalue_lookup = make_updated_evalue_dict(prev_updated_evalues, delta_updated_evalue_hits)
     write_updated_output(blast_kwargs["query"], blast_kwargs["out"], db, updated_evalue_lookup)

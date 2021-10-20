@@ -3,15 +3,14 @@ import shlex
 import subprocess
 from itertools import chain
 from typing import Optional, Union
-from ievalue_db import IevalueDB
-from ievalue_types import DatabaseData, HitData
+from ievalue_db import IevalueDB, DatabaseData, HitData, DbIdx, HitIdx
 
 
 def get_delta_sizes(dbs: list[str]) -> list[DatabaseData]:
     db_sizes = []
     for db in dbs:
         db_residue, _ = read_database_parts(db)
-        db_sizes.append({"database_name": db, "residue": db_residue})
+        db_sizes.append((db, db_residue))
     return db_sizes
 
 
@@ -118,19 +117,19 @@ def deconstruct_call(program_call: str) -> dict[str, str]:
     return blast_kwargs
 
 
-def get_updated_evalues(hits, total_residues, partial_residues) -> list[HitData]:
+def get_updated_evalues(hits: list[HitData], total_residues: int, partial_residues: int) -> list[HitData]:
     updates = []
     for hit in hits:
-        hit = hit.copy()  # this currently doesn't matter, but might prevent unexpected behavior in the future
         scaling_factor = (1.0 * total_residues) / (1.0 * partial_residues)
-        evalue = float(hit["evalue"]) * scaling_factor
-        hit["evalue"] = evalue
-        updates.append(hit)
+        evalue = hit[HitIdx.EVALUE] * scaling_factor
+        updated_hit = list(hit)
+        updated_hit[HitIdx.EVALUE] = evalue
+        updates.append(tuple(updated_hit))
 
     return updates
 
 
-def parse_delta_db(out_file_name: str) -> list[dict[str, Union[float, str]]]:
+def parse_delta_db(out_file_name: str) -> list[HitData]:
     delta_file_name = out_file_name + "-delta"
     hits = []
     other = []
@@ -138,17 +137,17 @@ def parse_delta_db(out_file_name: str) -> list[dict[str, Union[float, str]]]:
         for line in f:
             result = line.strip().split("\t")
             hits.append(
-                {
-                    "query": result[0],
-                    "hit": result[1],
-                    "evalue": float(result[10]),
-                    "the_rest": "\t".join(result[2:10] + [result[11]]),
-                }
+                (
+                    result[0],
+                    result[1],
+                    float(result[10]),
+                    "\t".join(result[2:10] + [result[11]]),
+                )
             )
     return hits
 
 
-def write_updated_output(query_file_name: str, out_file_name: str, db, updated_evalue_lookup) -> None:
+def write_updated_output(query_file_name: str, out_file_name: str, db, updated_evalue_lookup: dict[str, float]) -> None:
     out_file_name = out_file_name.split(".")[0] + ".m8"
     with open(query_file_name, "r") as query_f, open(out_file_name, "w") as out_f:
         for line in query_f:
@@ -156,15 +155,14 @@ def write_updated_output(query_file_name: str, out_file_name: str, db, updated_e
                 query = line.strip()[1:]
                 # values = query, hit, evalue
                 for hit in db.get_query(query):
-
-                    evalue = hit["evalue"]
-                    if updated_evalue := updated_evalue_lookup[f"{query}{hit['hit']}{hit['the_rest']}"]:
+                    evalue = hit[HitIdx.EVALUE]
+                    if updated_evalue := updated_evalue_lookup[f"{query}{hit[HitIdx.HIT]}{hit[HitIdx.THE_REST]}"]:
                         evalue = updated_evalue
 
                     # TODO DON'T HARD CODE THIS, GET IT FROM KWARGS
                     if evalue <= 10:
-                        the_rest = hit["the_rest"].split("\t")
-                        all_values = [query, hit["hit"]] + the_rest[:-1] + [f"{evalue:.3}"] + [the_rest[-1]]
+                        the_rest = hit[HitIdx.THE_REST].split("\t")
+                        all_values = [query, hit[HitIdx.HIT]] + the_rest[:-1] + [f"{evalue:.3}"] + [the_rest[-1]]
                         print("\t".join(all_values), file=out_f)
 
 
@@ -172,13 +170,9 @@ def make_updated_evalue_dict(
     prev_updated_evalues: list[HitData], delta_updated_evalue_hits: list[HitData]
 ) -> dict[str, float]:
     updated_evalue_lookup = {}
-    for hit in prev_updated_evalues:
-        updated_evalue_lookup[f"{hit['query']}{hit['hit']}{hit['the_rest']}"] = hit["evalue"]
-
-    for hit in delta_updated_evalue_hits:
-        updated_evalue_lookup[f"{hit['query']}{hit['hit']}{hit['the_rest']}"] = hit["evalue"]
-
-    return updated_evalue_lookup # type: ignore
+    for hit in prev_updated_evalues + delta_updated_evalue_hits:
+        updated_evalue_lookup[f"{hit[HitIdx.QUERY]}{hit[HitIdx.HIT]}{hit[HitIdx.THE_REST]}"] = hit[HitIdx.EVALUE]
+    return updated_evalue_lookup
 
 
 def main(program_call: str) -> None:
@@ -188,9 +182,8 @@ def main(program_call: str) -> None:
     # TODO only search sequences that have not been searched on the exact previous databases
     prev_dbs, prev_residues = [], 0
     if prev_data := db.get_db_info():
-        prev_dbs = [db_data["database"] for db_data in prev_data]  # type: ignore
-        print([db_data["residue"] for db_data in prev_data])
-        prev_residues = sum([db_data["residue"] for db_data in prev_data])  # type: ignore
+        prev_dbs = [db_data[DbIdx.DATABASE] for db_data in prev_data]  # type: ignore
+        prev_residues = int(sum([db_data[DbIdx.RESIDUE] for db_data in prev_data]))  # type: ignore # int for type checker
 
     # dbs that have not been searched on yet
     delta_dbs, delta_parts = get_delta_db(
@@ -206,14 +199,10 @@ def main(program_call: str) -> None:
     db.add_database_record(delta_data)
 
     # update evalues from the old hits
-    delta_residue = sum([delta_db["residue"] for delta_db in delta_data])
-    total_residues = prev_residues + delta_residue  # type: ignore
+    delta_residue = int(sum([delta_db[DbIdx.RESIDUE] for delta_db in delta_data]))  # int for type checker
+    total_residues = prev_residues + delta_residue
 
     # TODO better explain the math here
-    # we need the total size of the previous and delta residue
-    # we also need that number minus the size of the residue of the original database
-    #(707856  +707808+ 732107)/732107
-    #delta_residue = total_residues - prev_residues
 
     # update the evalues
     # TODO, this currently starts failing at the third database increment

@@ -1,23 +1,30 @@
 import sqlite3
 import os.path
-from typing import Optional, Union
-from ievalue_types import DatabaseData, HitData
+from enum import IntEnum
+from typing import Union, Literal
 
 DATABASE = "ievalue_metadata.db"
 
+DatabaseData = tuple[str, int]
+HitData = tuple[str, str, float, str]
 
-def dict_factory(cursor, row):
-    d = {}
-    for idx, col in enumerate(cursor.description):
-        # we could do something here like if the first value is x, set this as a particular data type
-        d[col[0]] = row[idx]
-    return d
+# These are so that we can save time by returning the default list of tuples from sqlite,
+# but won't accidentally call the wrong index.
+class DbIdx(IntEnum):
+    DATABASE = 0
+    RESIDUE = 1
+
+
+class HitIdx(IntEnum):
+    QUERY = 0
+    HIT = 1
+    EVALUE = 2
+    THE_REST = 3
 
 
 class IevalueDB:
     def __init__(self) -> None:
         self._con = sqlite3.connect(DATABASE)
-        self._con.row_factory = dict_factory
         self._cur = self._con.cursor()
         # If the database does not exist, initialize it
         if os.path.getsize(DATABASE) == 0:
@@ -39,12 +46,10 @@ class IevalueDB:
         return self._cur.execute("SELECT * from hits").fetchall()
 
     def get_query(self, query: str) -> list[HitData]:
-        return self._cur.execute(
-            "SELECT hit, evalue, the_rest FROM hits WHERE query = :query ORDER BY evalue", {"query": query}
-        ).fetchall()
+        return self._cur.execute("SELECT * FROM hits WHERE query = ? ORDER BY evalue", (query,)).fetchall()
 
     def insert_hits(self, hits: list[HitData]) -> None:
-        self._cur.executemany("INSERT INTO hits VALUES (:query, :hit, :evalue, :the_rest)", hits)
+        self._cur.executemany("INSERT INTO hits VALUES (?, ?, ?, ?)", hits)
         self._con.commit()
 
     def update_evalues(self, updates: list[HitData]) -> None:
@@ -53,18 +58,23 @@ class IevalueDB:
         # but this should be kept in mind
         self._cur.executemany(
             """UPDATE hits
-            SET evalue = :evalue
-            WHERE query = :query and hit = :hit and the_rest = :the_rest;
+            SET evalue = ?
+            WHERE query = ? and hit = ? and the_rest = ?;
             """,
-            updates,
+            (
+                [
+                    [update[HitIdx.EVALUE], update[HitIdx.QUERY], update[HitIdx.HIT], update[HitIdx.THE_REST]]
+                    for update in updates
+                ]
+            ),
         )
         self._con.commit()
 
-    def get_db_info(self) -> list[Optional[DatabaseData]]:
+    def get_db_info(self) -> Union[list[None], list[DatabaseData]]:
         return self._cur.execute("SELECT * FROM databases").fetchall()
 
     def add_database_record(self, new_databases: list[DatabaseData]) -> None:
-        self._cur.executemany("INSERT INTO databases VALUES (:database_name, :residue)", new_databases)
+        self._cur.executemany("INSERT INTO databases VALUES (?, ?)", new_databases)
         self._con.commit()
 
     def __del__(self) -> None:

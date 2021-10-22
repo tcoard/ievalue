@@ -2,7 +2,7 @@ import sys
 import shlex
 import subprocess
 from itertools import chain
-from typing import Optional, Union
+from typing import Optional
 from ievalue_db import IevalueDB, DatabaseData, HitData, DbIdx, HitIdx
 
 
@@ -122,9 +122,8 @@ def get_updated_evalues(hits: list[HitData], total_residues: int, partial_residu
     for hit in hits:
         scaling_factor = (1.0 * total_residues) / (1.0 * partial_residues)
         evalue = hit[HitIdx.EVALUE] * scaling_factor
-        updated_hit = list(hit)
-        updated_hit[HitIdx.EVALUE] = evalue
-        updates.append(tuple(updated_hit))
+        updated_hit = (hit[HitIdx.QUERY], hit[HitIdx.HIT], evalue, hit[HitIdx.THE_REST])
+        updates.append(updated_hit)
 
     return updates
 
@@ -132,7 +131,6 @@ def get_updated_evalues(hits: list[HitData], total_residues: int, partial_residu
 def parse_delta_db(out_file_name: str) -> list[HitData]:
     delta_file_name = out_file_name + "-delta"
     hits = []
-    other = []
     with open(delta_file_name, "r") as f:
         for line in f:
             result = line.strip().split("\t")
@@ -140,14 +138,14 @@ def parse_delta_db(out_file_name: str) -> list[HitData]:
                 (
                     result[0],
                     result[1],
-                    float(result[10]),
+                    float(f"{float(result[10]):.5}"),
                     "\t".join(result[2:10] + [result[11]]),
                 )
             )
     return hits
 
 
-def write_updated_output(query_file_name: str, out_file_name: str, db, updated_evalue_lookup: dict[str, float]) -> None:
+def write_updated_output(query_file_name: str, out_file_name: str, db) -> None:
     out_file_name = out_file_name.split(".")[0] + ".m8"
     with open(query_file_name, "r") as query_f, open(out_file_name, "w") as out_f:
         for line in query_f:
@@ -155,22 +153,17 @@ def write_updated_output(query_file_name: str, out_file_name: str, db, updated_e
                 query = line.strip()[1:]
                 # values = query, hit, evalue
                 for hit in db.get_query(query):
-                    evalue = hit[HitIdx.EVALUE]
-                    if updated_evalue := updated_evalue_lookup[f"{query}{hit[HitIdx.HIT]}{hit[HitIdx.THE_REST]}"]:
-                        evalue = updated_evalue
-
                     # TODO DON'T HARD CODE THIS, GET IT FROM KWARGS
+                    evalue = hit[HitIdx.EVALUE]
                     if evalue <= 10:
                         the_rest = hit[HitIdx.THE_REST].split("\t")
                         all_values = [query, hit[HitIdx.HIT]] + the_rest[:-1] + [f"{evalue:.3}"] + [the_rest[-1]]
                         print("\t".join(all_values), file=out_f)
 
 
-def make_updated_evalue_dict(
-    prev_updated_evalues: list[HitData], delta_updated_evalue_hits: list[HitData]
-) -> dict[str, float]:
+def make_updated_evalue_dict(delta_updated_evalue_hits: list[HitData]) -> dict[str, float]:
     updated_evalue_lookup = {}
-    for hit in prev_updated_evalues + delta_updated_evalue_hits:
+    for hit in delta_updated_evalue_hits:
         updated_evalue_lookup[f"{hit[HitIdx.QUERY]}{hit[HitIdx.HIT]}{hit[HitIdx.THE_REST]}"] = hit[HitIdx.EVALUE]
     return updated_evalue_lookup
 
@@ -193,7 +186,6 @@ def main(program_call: str) -> None:
         return
 
     delta_data = get_delta_sizes(delta_parts)
-    print(delta_data)
 
     # add the size of the residues for each database
     db.add_database_record(delta_data)
@@ -205,12 +197,8 @@ def main(program_call: str) -> None:
     # TODO better explain the math here
 
     # update the evalues
-    # TODO, this currently starts failing at the third database increment
-    prev_updated_evalues = []
     if prev_residues:
-        hits = db.get_all_hits()
-        prev_updated_evalues = get_updated_evalues(hits, total_residues, prev_residues)
-        db.update_evalues(prev_updated_evalues)
+        db.update_old_evalues(total_residues, prev_residues)
 
     # perform blast on just the new dbs
     do_delta_blast(blast_kwargs, delta_dbs)
@@ -221,8 +209,7 @@ def main(program_call: str) -> None:
     delta_updated_evalue_hits = get_updated_evalues(delta_hits, total_residues, delta_residue)
     db.insert_hits(delta_updated_evalue_hits)
 
-    updated_evalue_lookup = make_updated_evalue_dict(prev_updated_evalues, delta_updated_evalue_hits)
-    write_updated_output(blast_kwargs["query"], blast_kwargs["out"], db, updated_evalue_lookup)
+    write_updated_output(blast_kwargs["query"], blast_kwargs["out"], db)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,9 @@ import os.path
 from enum import IntEnum
 from typing import Union, Literal
 
+
+# TODO save previous database, so that if things mess up part way through, we can revert to that
+# maybe even automatically revert
 DATABASE = "ievalue_metadata.db"
 
 DatabaseData = tuple[str, int]
@@ -20,11 +23,14 @@ class HitIdx(IntEnum):
     HIT = 1
     EVALUE = 2
     THE_REST = 3
+    HIT_PK = 4
 
 
 class IevalueDB:
     def __init__(self) -> None:
         self._con = sqlite3.connect(DATABASE)
+        self._con.execute("PRAGMA synchronous = OFF")
+        self._con.execute("PRAGMA journal_mode = OFF")
         self._cur = self._con.cursor()
         # If the database does not exist, initialize it
         if os.path.getsize(DATABASE) == 0:
@@ -38,9 +44,14 @@ class IevalueDB:
         )
         self._cur.execute(
             """CREATE TABLE hits
-                       (query text, hit text, evalue float, the_rest text)"""
+                       (query text NOT NULL, hit text NOT NULL, evalue float NOT NULL, the_rest TEXT NOT NULL)"""  # WITHOUT ROWID"""
         )
+        # self._cur.execute(
+        #     """CREATE INDEX hits_idx on hits query"""
+        # )
         self._con.commit()
+        # (query text NOT NULL, hit text NOT NULL, evalue float NOT NULL, the_rest TEXT PRIMAY KEY)"""# WITHOUT ROWID"""
+        # ;(query text NOT NULL, hit text NOT NULL, evalue float NOT NULL, the_rest text NOT NULL, CONSTRAINT hit_pk PRIMARY KEY (query, hit, the_rest)) WITHOUT ROWID"""
 
     def get_all_hits(self) -> list[HitData]:
         return self._cur.execute("SELECT * from hits").fetchall()
@@ -52,22 +63,12 @@ class IevalueDB:
         self._cur.executemany("INSERT INTO hits VALUES (?, ?, ?, ?)", hits)
         self._con.commit()
 
-    def update_evalues(self, updates: list[HitData]) -> None:
+    def update_old_evalues(self, total_residues, prev_residues) -> None:
         # we shouldn't have to worry about collision
         # because samples shouldn't be run more than once
         # but this should be kept in mind
-        self._cur.executemany(
-            """UPDATE hits
-            SET evalue = ?
-            WHERE query = ? and hit = ? and the_rest = ?;
-            """,
-            (
-                [
-                    [update[HitIdx.EVALUE], update[HitIdx.QUERY], update[HitIdx.HIT], update[HitIdx.THE_REST]]
-                    for update in updates
-                ]
-            ),
-        )
+        scaling_factor = 1.0 * total_residues / prev_residues
+        self._cur.execute("""UPDATE hits SET evalue = evalue * ? """, (scaling_factor,))
         self._con.commit()
 
     def get_db_info(self) -> Union[list[None], list[DatabaseData]]:

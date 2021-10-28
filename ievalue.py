@@ -82,14 +82,15 @@ def get_delta_db(
     return delta_dbs, delta_parts
 
 
-def do_delta_blast(blast_kwargs: dict[str, str], delta_dbs: str) -> None:
+def run_blast(blast_kwargs: dict[str, str], delta_dbs: str, is_delta: bool) -> None:
     delta_kwargs = blast_kwargs.copy()
 
     blast_program = delta_kwargs.pop("blast_program")
     delta_kwargs.pop("blast_type")
 
     delta_kwargs["db"] = delta_dbs
-    delta_kwargs["out"] = f"{delta_kwargs['out']}-delta"
+    if is_delta:
+        delta_kwargs["out"] = f"{delta_kwargs['out']}-delta"
     command = list(chain.from_iterable([[f"-{kw}", arg] for kw, arg in delta_kwargs.items()]))
     command.insert(0, blast_program)
     print(" ".join(command))
@@ -121,17 +122,18 @@ def get_updated_evalues(hits: list[HitData], total_residues: int, partial_residu
     updates = []
     for hit in hits:
         scaling_factor = (1.0 * total_residues) / (1.0 * partial_residues)
-        evalue = hit[HitIdx.EVALUE] * scaling_factor
+        evalue = float(hit[HitIdx.EVALUE]) * scaling_factor  # float for type checker
         updated_hit = (hit[HitIdx.QUERY], hit[HitIdx.HIT], evalue, hit[HitIdx.THE_REST])
         updates.append(updated_hit)
 
     return updates
 
 
-def parse_delta_db(out_file_name: str) -> list[HitData]:
-    delta_file_name = out_file_name + "-delta"
+def parse_delta_db(out_file_name: str, is_delta: bool) -> list[HitData]:
+    if is_delta:
+        out_file_name = out_file_name + "-delta"
     hits = []
-    with open(delta_file_name, "r") as f:
+    with open(out_file_name, "r") as f:
         for line in f:
             result = line.strip().split("\t")
             hits.append(
@@ -161,13 +163,6 @@ def write_updated_output(query_file_name: str, out_file_name: str, db) -> None:
                         print("\t".join(all_values), file=out_f)
 
 
-def make_updated_evalue_dict(delta_updated_evalue_hits: list[HitData]) -> dict[str, float]:
-    updated_evalue_lookup = {}
-    for hit in delta_updated_evalue_hits:
-        updated_evalue_lookup[f"{hit[HitIdx.QUERY]}{hit[HitIdx.HIT]}{hit[HitIdx.THE_REST]}"] = hit[HitIdx.EVALUE]
-    return updated_evalue_lookup
-
-
 def main(program_call: str) -> None:
     db = IevalueDB()
     blast_kwargs = deconstruct_call(program_call)
@@ -175,8 +170,8 @@ def main(program_call: str) -> None:
     # TODO only search sequences that have not been searched on the exact previous databases
     prev_dbs, prev_residues = [], 0
     if prev_data := db.get_db_info():
-        prev_dbs = [db_data[DbIdx.DATABASE] for db_data in prev_data]  # type: ignore
-        prev_residues = int(sum([db_data[DbIdx.RESIDUE] for db_data in prev_data]))  # type: ignore # int for type checker
+        prev_dbs = [db_data[DbIdx.DATABASE] for db_data in prev_data if db_data is not None]
+        prev_residues = int(sum([db_data[DbIdx.RESIDUE] for db_data in prev_data if db_data is not None]))
 
     # dbs that have not been searched on yet
     delta_dbs, delta_parts = get_delta_db(
@@ -190,26 +185,26 @@ def main(program_call: str) -> None:
     # add the size of the residues for each database
     db.add_database_record(delta_data)
 
-    # update evalues from the old hits
-    delta_residue = int(sum([delta_db[DbIdx.RESIDUE] for delta_db in delta_data]))  # int for type checker
-    total_residues = prev_residues + delta_residue
-
-    # TODO better explain the math here
-
-    # update the evalues
     if prev_residues:
+        # update evalues from the old hits
+        delta_residue = int(sum([delta_db[DbIdx.RESIDUE] for delta_db in delta_data]))  # int for type checker
+        total_residues = prev_residues + delta_residue
         db.update_old_evalues(total_residues, prev_residues)
 
-    # perform blast on just the new dbs
-    do_delta_blast(blast_kwargs, delta_dbs)
+        # perform blast on just the new dbs
+        run_blast(blast_kwargs, delta_dbs, is_delta=True)
 
-    # get the new results and add them to the database
-    delta_hits = parse_delta_db(blast_kwargs["out"])
+        # get the new results and add them to the database
+        delta_hits = parse_delta_db(blast_kwargs["out"], is_delta=True)
+        updated_delta_hits = get_updated_evalues(delta_hits, total_residues, delta_residue)
+        db.insert_hits(updated_delta_hits)
 
-    delta_updated_evalue_hits = get_updated_evalues(delta_hits, total_residues, delta_residue)
-    db.insert_hits(delta_updated_evalue_hits)
+        write_updated_output(blast_kwargs["query"], blast_kwargs["out"], db)
 
-    write_updated_output(blast_kwargs["query"], blast_kwargs["out"], db)
+    else:
+        run_blast(blast_kwargs, delta_dbs, is_delta=False)
+        delta_hits = parse_delta_db(blast_kwargs["out"], is_delta=False)
+        db.insert_hits(delta_hits)
 
 
 if __name__ == "__main__":

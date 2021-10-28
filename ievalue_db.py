@@ -1,7 +1,7 @@
 import sqlite3
 import os.path
 from enum import IntEnum
-from typing import Union, Literal
+from typing import Union
 
 
 # TODO save previous database, so that if things mess up part way through, we can revert to that
@@ -68,7 +68,7 @@ class IevalueDB:
         # because samples shouldn't be run more than once
         # but this should be kept in mind
         scaling_factor = 1.0 * total_residues / prev_residues
-        self._cur.execute("""UPDATE hits SET evalue = evalue * ? """, (scaling_factor,))
+        self._cur.execute("""UPDATE hits SET evalue = evalue * ?""", (scaling_factor,))
         self._con.commit()
 
     def get_db_info(self) -> Union[list[None], list[DatabaseData]]:

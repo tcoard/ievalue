@@ -6,7 +6,6 @@ from typing import Union
 
 # TODO save previous database, so that if things mess up part way through, we can revert to that
 # maybe even automatically revert
-DATABASE = "ievalue_metadata.db"
 
 DatabaseData = tuple[str, int]
 HitData = tuple[str, str, float, str]
@@ -27,14 +26,15 @@ class HitIdx(IntEnum):
 
 
 class IevalueDB:
-    def __init__(self) -> None:
-        self._con = sqlite3.connect(DATABASE)
+    def __init__(self, db_path: str) -> None:
+        database = db_path + "ievalue_metadata.db"
+        self._con = sqlite3.connect(database)
         self._con.execute("PRAGMA synchronous = OFF")
         self._con.execute("PRAGMA journal_mode = OFF")
         self._cur = self._con.cursor()
         # If the database does not exist, initialize it
-        if os.path.getsize(DATABASE) == 0:
-            print(f"Creating initial database: {DATABASE}")
+        if os.path.getsize(database) == 0:
+            print(f"Creating initial database: {database}")
             self._create_db()
 
     def _create_db(self) -> None:

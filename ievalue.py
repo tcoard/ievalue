@@ -163,9 +163,12 @@ def write_updated_output(query_file_name: str, out_file_name: str, db) -> None:
                         print("\t".join(all_values), file=out_f)
 
 
-def main(program_call: str) -> None:
-    db = IevalueDB()
+def main(program_call: str, path: str) -> None:
+    if path and path[-1] != "/":
+        path += "/"
+    db = IevalueDB(path)
     blast_kwargs = deconstruct_call(program_call)
+    blast_kwargs["out"] = path + blast_kwargs["out"]
 
     # TODO only search sequences that have not been searched on the exact previous databases
     prev_dbs, prev_residues = [], 0
@@ -208,5 +211,12 @@ def main(program_call: str) -> None:
 
 
 if __name__ == "__main__":
-    print(sys.argv[1])
-    main(sys.argv[1])
+    if len(sys.argv) >= 2:
+        _path = ""
+        if len(sys.argv) == 3:
+            _path = sys.argv[2]
+        else:
+            print("Error: Too many input arguments")
+        main(sys.argv[1], _path)
+    else:
+        print("Error: Need blast kwargs")

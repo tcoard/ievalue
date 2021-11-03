@@ -2,7 +2,7 @@ import sys
 import shlex
 import subprocess
 from itertools import chain
-from typing import Optional
+from typing import Optional, cast
 from ievalue_db import IevalueDB, DatabaseData, HitData, DbIdx, HitIdx
 
 
@@ -40,7 +40,8 @@ def read_database_parts(db_name: str) -> tuple[int, list[str]]:
             if line == "Volumes:":
                 capture_hits = True
             elif capture_hits:
-                parts.append(line.strip().split("/")[-1])
+                # parts.append(line.strip().split("/")[-1])
+                parts.append(line.strip())
 
     if db_residue == -1:
         raise ValueError("TODO write error")
@@ -122,7 +123,7 @@ def get_updated_evalues(hits: list[HitData], total_residues: int, partial_residu
     updates = []
     for hit in hits:
         scaling_factor = (1.0 * total_residues) / (1.0 * partial_residues)
-        evalue = float(hit[HitIdx.EVALUE]) * scaling_factor  # float for type checker
+        evalue = cast(float, hit[HitIdx.EVALUE]) * scaling_factor  # float for type checker
         updated_hit = (hit[HitIdx.QUERY], hit[HitIdx.HIT], evalue, hit[HitIdx.THE_REST])
         updates.append(updated_hit)
 
@@ -173,8 +174,9 @@ def main(program_call: str, path: str) -> None:
     # TODO only search sequences that have not been searched on the exact previous databases
     prev_dbs, prev_residues = [], 0
     if prev_data := db.get_db_info():
-        prev_dbs = [db_data[DbIdx.DATABASE] for db_data in prev_data if db_data is not None]
-        prev_residues = int(sum([db_data[DbIdx.RESIDUE] for db_data in prev_data if db_data is not None]))
+        prev_data = cast(list[DatabaseData], prev_data) # for the type checker
+        prev_dbs = [db_data[DbIdx.DATABASE] for db_data in prev_data]
+        prev_residues = int(sum([db_data[DbIdx.RESIDUE] for db_data in prev_data]))
 
     # dbs that have not been searched on yet
     delta_dbs, delta_parts = get_delta_db(
@@ -190,7 +192,7 @@ def main(program_call: str, path: str) -> None:
 
     if prev_residues:
         # update evalues from the old hits
-        delta_residue = int(sum([delta_db[DbIdx.RESIDUE] for delta_db in delta_data]))  # int for type checker
+        delta_residue = cast(int, sum([delta_db[DbIdx.RESIDUE] for delta_db in delta_data]))  # int for type checker
         total_residues = prev_residues + delta_residue
         db.update_old_evalues(total_residues, prev_residues)
 
@@ -215,7 +217,7 @@ if __name__ == "__main__":
         _path = ""
         if len(sys.argv) == 3:
             _path = sys.argv[2]
-        else:
+        elif len(sys.argv) > 3:
             print("Error: Too many input arguments")
         main(sys.argv[1], _path)
     else:

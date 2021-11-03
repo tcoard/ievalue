@@ -46,9 +46,9 @@ class IevalueDB:
             """CREATE TABLE hits
                        (query text NOT NULL, hit text NOT NULL, evalue float NOT NULL, the_rest TEXT NOT NULL)"""  # WITHOUT ROWID"""
         )
-        # self._cur.execute(
-        #     """CREATE INDEX hits_idx on hits query"""
-        # )
+        self._cur.execute(
+            """CREATE INDEX hits_idx on hits (query)"""
+        )
         self._con.commit()
         # (query text NOT NULL, hit text NOT NULL, evalue float NOT NULL, the_rest TEXT PRIMAY KEY)"""# WITHOUT ROWID"""
         # ;(query text NOT NULL, hit text NOT NULL, evalue float NOT NULL, the_rest text NOT NULL, CONSTRAINT hit_pk PRIMARY KEY (query, hit, the_rest)) WITHOUT ROWID"""

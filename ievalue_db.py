@@ -7,7 +7,8 @@ from typing import Union
 # TODO save previous database, so that if things mess up part way through, we can revert to that
 # maybe even automatically revert
 
-DatabaseData = tuple[str, int]
+DatabaseData = Union[tuple[str, int], tuple[str, int, str]]
+
 HitData = tuple[str, str, float, str]
 
 # These are so that we can save time by returning the default list of tuples from sqlite,
@@ -15,6 +16,7 @@ HitData = tuple[str, str, float, str]
 class DbIdx(IntEnum):
     DATABASE = 0
     RESIDUE = 1
+    FASTAS = 1
 
 
 class HitIdx(IntEnum):
@@ -40,7 +42,7 @@ class IevalueDB:
     def _create_db(self) -> None:
         self._cur.execute(
             """CREATE TABLE databases
-                       (database text, residue int)"""
+                       (database text NOT NULL, residue int NOT NULL, fastas text)"""
         )
         self._cur.execute(
             """CREATE TABLE hits

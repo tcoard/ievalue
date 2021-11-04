@@ -6,53 +6,66 @@ from typing import Optional, cast
 from ievalue_db import IevalueDB, DatabaseData, HitData, DbIdx, HitIdx
 
 
-def get_delta_sizes(dbs: list[str]) -> list[DatabaseData]:
+def get_delta_sizes(dbs: list[str], search_type: str) -> list[DatabaseData]:
     db_sizes = []
     for db in dbs:
-        db_residue, _ = read_database_parts(db)
+        db_residue, _ = read_database_parts(db, search_type)
         db_sizes.append((db, db_residue))
     return db_sizes
 
 
-def read_database_parts(db_name: str) -> tuple[int, list[str]]:
-    try:
-        result = subprocess.run(
-            ["blastdbcmd", "-db", db_name, "-info", "-exact_length"], stdout=subprocess.PIPE, check=True
-        )
-    except subprocess.CalledProcessError:
-        raise ValueError("TODO write error")
+def read_database_parts(db_name: str, search_type: str) -> tuple[int, list[str]]:
 
-    db_info = result.stdout.decode("utf-8").split("\n")
-
-    capture_db_size = False
-    capture_hits = False
-    db_residue = -1
+    db_residue = 0
     parts = []
-    for line in db_info:
-        if line != "":
-            if line.startswith("Database:"):
-                capture_db_size = True
-            elif capture_db_size:
-                data = line.strip().split(" ")
-                db_residue = int(data[2].replace(",", ""))
-                capture_db_size = False
+    if search_type in ["nuc", "prot"]: # TODO
+        try:
+            result = subprocess.run(
+                ["blastdbcmd", "-db", db_name, "-info", "-exact_length"], stdout=subprocess.PIPE, check=True
+            )
+        except subprocess.CalledProcessError:
+            raise ValueError("TODO write error")
 
-            if line == "Volumes:":
-                capture_hits = True
-            elif capture_hits:
-                # parts.append(line.strip().split("/")[-1])
-                parts.append(line.strip())
+        db_info = result.stdout.decode("utf-8").split("\n")
+        capture_db_size = False
+        capture_hits = False
+        for line in db_info:
+            if line != "":
+                if line.startswith("Database:"):
+                    capture_db_size = True
+                elif capture_db_size:
+                    data = line.strip().split(" ")
+                    db_residue = int(data[2].replace(",", ""))
+                    capture_db_size = False
 
-    if db_residue == -1:
+                if line == "Volumes:":
+                    capture_hits = True
+                elif capture_hits:
+                    # parts.append(line.strip().split("/")[-1])
+                    parts.append(line.strip())
+
+
+    elif search_type == "mmseqs":
+        with open(f"{db_name}.source", "r") as f:
+            for line in f:
+                parts.append(line.strip().split('\t')[1])
+
+        with open(db_name, "r") as f:
+            for line in f:
+                if not line.startswith(">"):
+                    db_residue += len(line.strip())
+
+    if db_residue == 0:
         raise ValueError("TODO write error")
 
     return db_residue, parts
 
 
 def get_delta_db(
-    blast_database: str, blast_type: str, out_file_name: str, prev_dbs: list[Optional[str]]
+    blast_database: str, search_type: str, out_file_name: str, prev_dbs: list[Optional[str]]
 ) -> tuple[str, list[str]]:
-    _, curr_dbs = read_database_parts(blast_database)
+    breakpoint()
+    _, curr_dbs = read_database_parts(blast_database, search_type)
     delta_parts = list(set(curr_dbs).difference(set(prev_dbs)))
 
     if len(delta_parts) == 0:
@@ -65,58 +78,87 @@ def get_delta_db(
     else:
         delta_dbs = delta_parts[0]
 
-    # TODO try/except
-    command = [
-        "blastdb_aliastool",
-        "-dbtype",
-        blast_type,
-        "-dblist",
-        delta_dbs,
-        "-out",
-        f"{out_file_name}-delta",
-        "-title",
-        f"{out_file_name}-delta",
-    ]
-    print(" ".join(command))
-    subprocess.run(command, check=True)
+    command = []
+    if search_type in ["nuc", "prot"]: # TODO
+        # TODO try/except
+        command = [
+            "blastdb_aliastool",
+            "-dbtype",
+            search_type,
+            "-dblist",
+            delta_dbs,
+            "-out",
+            f"{out_file_name}-delta",
+            "-title",
+            f"{out_file_name}-delta",
+        ]
+        print(" ".join(command))
+        subprocess.run(command, check=True)
+    elif search_type == "mmseqs" and len(delta_parts) > 1:
+        command = [
+                "mmseqs",
+                "concatdbs",
+                delta_dbs
+            ]
+            #"--threads $THREADS TODO
+
+        print(" ".join(command))
+        subprocess.run(command, check=True)
 
     return delta_dbs, delta_parts
 
 
-def run_blast(blast_kwargs: dict[str, str], delta_dbs: str, is_delta: bool) -> None:
-    delta_kwargs = blast_kwargs.copy()
+def run_blast(search_kwargs: dict[str, str], delta_dbs: str, is_delta: bool) -> None:
+    command = []
+    delta_kwargs = search_kwargs.copy()
 
-    blast_program = delta_kwargs.pop("blast_program")
-    delta_kwargs.pop("blast_type")
+    program = delta_kwargs.pop("program")
+    delta_kwargs.pop("search_type")
 
     delta_kwargs["db"] = delta_dbs
     if is_delta:
         delta_kwargs["out"] = f"{delta_kwargs['out']}-delta"
-    command = list(chain.from_iterable([[f"-{kw}", arg] for kw, arg in delta_kwargs.items()]))
-    command.insert(0, blast_program)
+
+    if delta_kwargs["search_type"] in ["nuc", "prot"]: # TODO 
+        command = list(chain.from_iterable([[f"-{kw}", arg] for kw, arg in delta_kwargs.items()]))
+        command.insert(0, program)
+    elif delta_kwargs["search_type"] == "mmseqs":
+        command = ["mmseqs", "easy-search", delta_kwargs["query"], delta_kwargs["db"], delta_kwargs["out"], "--threads", delta_kwargs["threads"]]
     print(" ".join(command))
     subprocess.run(command, check=True)
 
 
 def deconstruct_call(program_call: str) -> dict[str, str]:
     # TODO add verification that needed kwargs are in the call
-    blast_kwargs = {}
-    blast_program, *kwargs = [kwarg.strip() for kwarg in program_call.split("-")]
+    search_kwargs = {}
+    program = program_call.split(" ")[0]
+    if program in ["blastp", "blastn"]:
+        program, *kwargs = [kwarg.strip() for kwarg in program_call.split("-")]
+        for kwarg in kwargs:
+            # TODO unsure if shlex.split is needed here, but it won't hurt for now
+            kw, arg = shlex.split(kwarg)
+            search_kwargs[kw] = arg
+    elif program == "mmseqs":
+        args = program_call.split(" ")
 
-    blast_kwargs["blast_program"] = blast_program
-    if blast_program == "blastn":
-        blast_kwargs["blast_type"] = "nuc"
-    elif blast_program == "blastp":
-        blast_kwargs["blast_type"] = "prot"
+        search_kwargs["query"] = args[2]
+        search_kwargs["db"] = args[3]
+        search_kwargs["out"] = args[4]
+        search_kwargs["threads"] = args[-1] # TIDO
+
+
+    search_kwargs["program"] = program
+    if program == "blastn":
+        search_kwargs["search_type"] = "nuc"
+    elif program == "blastp":
+        search_kwargs["search_type"] = "prot"
+    elif program == "mmseqs":
+        search_kwargs["search_type"] = "mmseqs" # TODO
     else:
-        raise ValueError(f"Unknown program call: {blast_program}")
+        raise ValueError(f"Unknown program call: {program}")
 
-    for kwarg in kwargs:
-        # TODO unsure if shlex.split is needed here, but it won't hurt for now
-        kw, arg = shlex.split(kwarg)
-        blast_kwargs[kw] = arg
 
-    return blast_kwargs
+    return search_kwargs
 
 
 def get_updated_evalues(hits: list[HitData], total_residues: int, partial_residues: int) -> list[HitData]:
@@ -168,8 +210,9 @@ def main(program_call: str, path: str) -> None:
     if path and path[-1] != "/":
         path += "/"
     db = IevalueDB(path)
-    blast_kwargs = deconstruct_call(program_call)
-    blast_kwargs["out"] = path + blast_kwargs["out"]
+    search_kwargs = deconstruct_call(program_call)
+    print(search_kwargs)
+    search_kwargs["out"] = path + search_kwargs["out"]
 
     # TODO only search sequences that have not been searched on the exact previous databases
     prev_dbs, prev_residues = [], 0
@@ -180,12 +223,12 @@ def main(program_call: str, path: str) -> None:
 
     # dbs that have not been searched on yet
     delta_dbs, delta_parts = get_delta_db(
-        blast_kwargs["db"], blast_kwargs["blast_type"], blast_kwargs["out"], prev_dbs  # type: ignore
+        search_kwargs["db"], search_kwargs["search_type"], search_kwargs["out"], prev_dbs  # type: ignore
     )
     if not delta_dbs:
         return
 
-    delta_data = get_delta_sizes(delta_parts)
+    delta_data = get_delta_sizes(delta_parts, search_kwargs["search_type"])
 
     # add the size of the residues for each database
     db.add_database_record(delta_data)
@@ -197,18 +240,18 @@ def main(program_call: str, path: str) -> None:
         db.update_old_evalues(total_residues, prev_residues)
 
         # perform blast on just the new dbs
-        run_blast(blast_kwargs, delta_dbs, is_delta=True)
+        run_blast(search_kwargs, delta_dbs, is_delta=True)
 
         # get the new results and add them to the database
-        delta_hits = parse_delta_db(blast_kwargs["out"], is_delta=True)
+        delta_hits = parse_delta_db(search_kwargs["out"], is_delta=True)
         updated_delta_hits = get_updated_evalues(delta_hits, total_residues, delta_residue)
         db.insert_hits(updated_delta_hits)
 
-        write_updated_output(blast_kwargs["query"], blast_kwargs["out"], db)
+        write_updated_output(search_kwargs["query"], search_kwargs["out"], db)
 
     else:
-        run_blast(blast_kwargs, delta_dbs, is_delta=False)
-        delta_hits = parse_delta_db(blast_kwargs["out"], is_delta=False)
+        run_blast(search_kwargs, delta_dbs, is_delta=False)
+        delta_hits = parse_delta_db(search_kwargs["out"], is_delta=False)
         db.insert_hits(delta_hits)
 
 

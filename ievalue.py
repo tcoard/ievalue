@@ -64,7 +64,6 @@ def read_database_parts(db_name: str, search_type: str) -> tuple[int, list[str]]
 def get_delta_db(
     blast_database: str, search_type: str, out_file_name: str, prev_dbs: list[Optional[str]]
 ) -> tuple[str, list[str]]:
-    breakpoint()
     _, curr_dbs = read_database_parts(blast_database, search_type)
     delta_parts = list(set(curr_dbs).difference(set(prev_dbs)))
 
@@ -79,31 +78,20 @@ def get_delta_db(
         delta_dbs = delta_parts[0]
 
     command = []
-    if search_type in ["nuc", "prot"]: # TODO
-        # TODO try/except
-        command = [
-            "blastdb_aliastool",
-            "-dbtype",
-            search_type,
-            "-dblist",
-            delta_dbs,
-            "-out",
-            f"{out_file_name}-delta",
-            "-title",
-            f"{out_file_name}-delta",
-        ]
-        print(" ".join(command))
-        subprocess.run(command, check=True)
-    elif search_type == "mmseqs" and len(delta_parts) > 1:
-        command = [
-                "mmseqs",
-                "concatdbs",
-                delta_dbs
-            ]
-            #"--threads $THREADS TODO
-
-        print(" ".join(command))
-        subprocess.run(command, check=True)
+    # TODO try/except
+    command = [
+        "blastdb_aliastool",
+        "-dbtype",
+        search_type,
+        "-dblist",
+        delta_dbs,
+        "-out",
+        f"{out_file_name}-delta",
+        "-title",
+        f"{out_file_name}-delta",
+    ]
+    print(" ".join(command))
+    subprocess.run(command, check=True)
 
     return delta_dbs, delta_parts
 
@@ -113,18 +101,18 @@ def run_blast(search_kwargs: dict[str, str], delta_dbs: str, is_delta: bool) -> 
     delta_kwargs = search_kwargs.copy()
 
     program = delta_kwargs.pop("program")
-    delta_kwargs.pop("search_type")
+    search_type = delta_kwargs.pop("search_type")
 
     delta_kwargs["db"] = delta_dbs
     if is_delta:
         delta_kwargs["out"] = f"{delta_kwargs['out']}-delta"
 
-    if delta_kwargs["search_type"] in ["nuc", "prot"]: # TODO 
+    if search_type in ["nuc", "prot"]: # TODO 
         command = list(chain.from_iterable([[f"-{kw}", arg] for kw, arg in delta_kwargs.items()]))
         command.insert(0, program)
-    elif delta_kwargs["search_type"] == "mmseqs":
-        command = ["mmseqs", "easy-search", delta_kwargs["query"], delta_kwargs["db"], delta_kwargs["out"], "--threads", delta_kwargs["threads"]]
-    print(" ".join(command))
+    elif search_type == "mmseqs":
+        command = ["mmseqs", "easy-search", delta_kwargs["query"], delta_kwargs["db"][0], delta_kwargs["out"], delta_kwargs["meta_data_dir"], "--threads", delta_kwargs["threads"]]
+    print(command)
     subprocess.run(command, check=True)
 
 
@@ -144,7 +132,8 @@ def deconstruct_call(program_call: str) -> dict[str, str]:
         search_kwargs["query"] = args[2]
         search_kwargs["db"] = args[3]
         search_kwargs["out"] = args[4]
-        search_kwargs["threads"] = args[-1] # TIDO
+        search_kwargs["meta_data_dir"] = args[5]
+        search_kwargs["threads"] = args[7]
 
 
     search_kwargs["program"] = program
@@ -221,12 +210,18 @@ def main(program_call: str, path: str) -> None:
         prev_dbs = [db_data[DbIdx.DATABASE] for db_data in prev_data]
         prev_residues = int(sum([db_data[DbIdx.RESIDUE] for db_data in prev_data]))
 
-    # dbs that have not been searched on yet
-    delta_dbs, delta_parts = get_delta_db(
-        search_kwargs["db"], search_kwargs["search_type"], search_kwargs["out"], prev_dbs  # type: ignore
-    )
-    if not delta_dbs:
-        return
+    delta_dbs = ""
+    delta_parts = []
+    if not search_kwargs["search_type"] == "mmseqs":
+        # dbs that have not been searched on yet
+        delta_dbs, delta_parts = get_delta_db(
+            search_kwargs["db"], search_kwargs["search_type"], search_kwargs["out"], prev_dbs  # type: ignore
+        )
+        if not delta_dbs:
+            return
+    else:
+        delta_dbs = search_kwargs["db"],
+        delta_parts = [search_kwargs["db"],]
 
     delta_data = get_delta_sizes(delta_parts, search_kwargs["search_type"])
 

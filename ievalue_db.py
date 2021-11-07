@@ -42,7 +42,7 @@ class IevalueDB:
     def _create_db(self) -> None:
         self._cur.execute(
             """CREATE TABLE databases
-                       (database text NOT NULL, residue int NOT NULL, fastas text)"""
+                       (database text NOT NULL, residue int NOT NULL)"""
         )
         self._cur.execute(
             """CREATE TABLE hits

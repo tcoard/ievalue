@@ -18,7 +18,7 @@ def read_database_parts(db_name: str, search_type: str) -> tuple[int, list[str]]
 
     db_residue = 0
     parts = []
-    if search_type in ["nuc", "prot"]: # TODO
+    if search_type in ["nuc", "prot"]:  # TODO
         try:
             result = subprocess.run(
                 ["blastdbcmd", "-db", db_name, "-info", "-exact_length"], stdout=subprocess.PIPE, check=True
@@ -44,11 +44,10 @@ def read_database_parts(db_name: str, search_type: str) -> tuple[int, list[str]]
                     # parts.append(line.strip().split("/")[-1])
                     parts.append(line.strip())
 
-
     elif search_type == "mmseqs":
         with open(f"{db_name}.source", "r") as f:
             for line in f:
-                parts.append(line.strip().split('\t')[1])
+                parts.append(line.strip().split("\t")[1])
 
         with open(db_name, "r") as f:
             for line in f:
@@ -107,11 +106,22 @@ def run_blast(search_kwargs: dict[str, str], delta_dbs: str, is_delta: bool) -> 
     if is_delta:
         delta_kwargs["out"] = f"{delta_kwargs['out']}-delta"
 
-    if search_type in ["nuc", "prot"]: # TODO 
+    if search_type in ["nuc", "prot"]:  # TODO
         command = list(chain.from_iterable([[f"-{kw}", arg] for kw, arg in delta_kwargs.items()]))
         command.insert(0, program)
     elif search_type == "mmseqs":
-        command = ["mmseqs", "easy-search", delta_kwargs["query"], delta_kwargs["db"][0], delta_kwargs["out"], delta_kwargs["meta_data_dir"], "--threads", delta_kwargs["threads"]]
+        command = [
+            "mmseqs",
+            "easy-search",
+            delta_kwargs["query"],
+            delta_kwargs["db"][0],
+            delta_kwargs["out"],
+            delta_kwargs["meta_data_dir"],
+            "--threads",
+            delta_kwargs["threads"],
+            "-e",
+            delta_kwargs["evalue_cutoff"],
+        ]
     print(command)
     subprocess.run(command, check=True)
 
@@ -134,7 +144,7 @@ def deconstruct_call(program_call: str) -> dict[str, str]:
         search_kwargs["out"] = args[4]
         search_kwargs["meta_data_dir"] = args[5]
         search_kwargs["threads"] = args[7]
-
+        search_kwargs["evalue_cutoff"] = args[9]
 
     search_kwargs["program"] = program
     if program == "blastn":
@@ -142,10 +152,9 @@ def deconstruct_call(program_call: str) -> dict[str, str]:
     elif program == "blastp":
         search_kwargs["search_type"] = "prot"
     elif program == "mmseqs":
-        search_kwargs["search_type"] = "mmseqs" # TODO
+        search_kwargs["search_type"] = "mmseqs"  # TODO
     else:
         raise ValueError(f"Unknown program call: {program}")
-
 
     return search_kwargs
 
@@ -179,7 +188,7 @@ def parse_delta_db(out_file_name: str, is_delta: bool) -> list[HitData]:
     return hits
 
 
-def write_updated_output(query_file_name: str, out_file_name: str, db) -> None:
+def write_updated_output(query_file_name: str, out_file_name: str, evalue_cutoff: str, db) -> None:
     out_file_name = out_file_name.split(".")[0] + ".m8"
     with open(query_file_name, "r") as query_f, open(out_file_name, "w") as out_f:
         to_print = ""
@@ -190,7 +199,7 @@ def write_updated_output(query_file_name: str, out_file_name: str, db) -> None:
                 for hit in db.get_query(query):
                     # TODO DON'T HARD CODE THIS, GET IT FROM KWARGS
                     evalue = hit[HitIdx.EVALUE]
-                    if evalue <= 10:
+                    if evalue <= float(evalue_cutoff):
                         the_rest = hit[HitIdx.THE_REST].split("\t")
                         all_values = [query, hit[HitIdx.HIT]] + the_rest[:-1] + [f"{evalue:.3}"] + [the_rest[-1]]
                         to_print += "\t".join(all_values) + "\n"
@@ -208,7 +217,7 @@ def main(program_call: str, path: str) -> None:
     # TODO only search sequences that have not been searched on the exact previous databases
     prev_dbs, prev_residues = [], 0
     if prev_data := db.get_db_info():
-        prev_data = cast(list[DatabaseData], prev_data) # for the type checker
+        prev_data = cast(list[DatabaseData], prev_data)  # for the type checker
         prev_dbs = [db_data[DbIdx.DATABASE] for db_data in prev_data]
         prev_residues = int(sum([db_data[DbIdx.RESIDUE] for db_data in prev_data]))
 
@@ -222,8 +231,10 @@ def main(program_call: str, path: str) -> None:
         if not delta_dbs:
             return
     else:
-        delta_dbs = search_kwargs["db"],
-        delta_parts = [search_kwargs["db"],]
+        delta_dbs = (search_kwargs["db"],)
+        delta_parts = [
+            search_kwargs["db"],
+        ]
 
     delta_data = get_delta_sizes(delta_parts, search_kwargs["search_type"])
 
@@ -244,7 +255,7 @@ def main(program_call: str, path: str) -> None:
         updated_delta_hits = calculate_updated_evalues(delta_hits, total_residues, delta_residue)
         db.insert_hits(updated_delta_hits)
 
-        write_updated_output(search_kwargs["query"], search_kwargs["out"], db)
+        write_updated_output(search_kwargs["query"], search_kwargs["out"], search_kwargs["evalue_cutoff"], db)
 
     else:
         run_blast(search_kwargs, delta_dbs, is_delta=False)

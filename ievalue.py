@@ -150,7 +150,7 @@ def deconstruct_call(program_call: str) -> dict[str, str]:
     return search_kwargs
 
 
-def get_updated_evalues(hits: list[HitData], total_residues: int, partial_residues: int) -> list[HitData]:
+def calculate_updated_evalues(hits: list[HitData], total_residues: int, partial_residues: int) -> list[HitData]:
     updates = []
     for hit in hits:
         scaling_factor = (1.0 * total_residues) / (1.0 * partial_residues)
@@ -182,6 +182,7 @@ def parse_delta_db(out_file_name: str, is_delta: bool) -> list[HitData]:
 def write_updated_output(query_file_name: str, out_file_name: str, db) -> None:
     out_file_name = out_file_name.split(".")[0] + ".m8"
     with open(query_file_name, "r") as query_f, open(out_file_name, "w") as out_f:
+        to_print = ""
         for line in query_f:
             if line.startswith(">"):
                 query = line.strip()[1:]
@@ -192,7 +193,8 @@ def write_updated_output(query_file_name: str, out_file_name: str, db) -> None:
                     if evalue <= 10:
                         the_rest = hit[HitIdx.THE_REST].split("\t")
                         all_values = [query, hit[HitIdx.HIT]] + the_rest[:-1] + [f"{evalue:.3}"] + [the_rest[-1]]
-                        print("\t".join(all_values), file=out_f)
+                        to_print += "\t".join(all_values) + "\n"
+        out_f.write(to_print)
 
 
 def main(program_call: str, path: str) -> None:
@@ -239,7 +241,7 @@ def main(program_call: str, path: str) -> None:
 
         # get the new results and add them to the database
         delta_hits = parse_delta_db(search_kwargs["out"], is_delta=True)
-        updated_delta_hits = get_updated_evalues(delta_hits, total_residues, delta_residue)
+        updated_delta_hits = calculate_updated_evalues(delta_hits, total_residues, delta_residue)
         db.insert_hits(updated_delta_hits)
 
         write_updated_output(search_kwargs["query"], search_kwargs["out"], db)

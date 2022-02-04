@@ -7,7 +7,7 @@ from ievalue_db import IevalueDB, DatabaseData, HitData, DbIdx, HitIdx
 
 
 def get_delta_sizes(dbs: list[str], search_type: str) -> list[DatabaseData]:
-    db_sizes = []
+    db_sizes: list[DatabaseData] = []
     for db in dbs:
         db_residue, _ = read_database_parts(db, search_type)
         db_sizes.append((db, db_residue))
@@ -119,8 +119,12 @@ def run_blast(search_kwargs: dict[str, str], delta_dbs: str, is_delta: bool) -> 
             delta_kwargs["meta_data_dir"],
             "--threads",
             delta_kwargs["threads"],
+            # "--max-seqs",
+            # delta_kwargs["max-seqs"],
             "-e",
             delta_kwargs["evalue_cutoff"],
+            "-s",
+            delta_kwargs["sensitivity"],
         ]
     print(command)
     subprocess.run(command, check=True)
@@ -144,7 +148,9 @@ def deconstruct_call(program_call: str) -> dict[str, str]:
         search_kwargs["out"] = args[4]
         search_kwargs["meta_data_dir"] = args[5]
         search_kwargs["threads"] = args[7]
-        search_kwargs["evalue_cutoff"] = args[9]
+        search_kwargs["max-seqs"] = args[9]
+        search_kwargs["evalue_cutoff"] = args[11]
+        search_kwargs["sensitivity"] = args[13]
 
     search_kwargs["program"] = program
     if program == "blastn":
@@ -160,7 +166,7 @@ def deconstruct_call(program_call: str) -> dict[str, str]:
 
 
 def calculate_updated_evalues(hits: list[HitData], total_residues: int, partial_residues: int) -> list[HitData]:
-    updates = []
+    updates: list[HitData] = []
     for hit in hits:
         scaling_factor = (1.0 * total_residues) / (1.0 * partial_residues)
         evalue = cast(float, hit[HitIdx.EVALUE]) * scaling_factor  # float for type checker
@@ -222,7 +228,7 @@ def main(program_call: str, path: str) -> None:
         prev_residues = int(sum([db_data[DbIdx.RESIDUE] for db_data in prev_data]))
 
     delta_dbs = ""
-    delta_parts = []
+    delta_parts: list[str] = []
     if not search_kwargs["search_type"] == "mmseqs":
         # dbs that have not been searched on yet
         delta_dbs, delta_parts = get_delta_db(

@@ -11,6 +11,7 @@ DatabaseData = Union[tuple[str, int], tuple[str, int, str]]
 
 HitData = tuple[str, str, float, str]
 
+
 # These are so that we can save time by returning the default list of tuples from sqlite,
 # but won't accidentally call the wrong index.
 class DbIdx(IntEnum):

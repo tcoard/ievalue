@@ -71,7 +71,7 @@ class IevalueDB:
         # because samples shouldn't be run more than once
         # but this should be kept in mind
         scaling_factor = 1.0 * total_residues / prev_residues
-        self._cur.execute("""UPDATE hits SET evalue = evalue * ?""", (scaling_factor,))
+        self._cur.execute("UPDATE hits SET evalue = evalue * ?", (scaling_factor,))
         self._con.commit()
 
     def get_db_info(self) -> Union[list[None], list[DatabaseData]]:
@@ -80,6 +80,37 @@ class IevalueDB:
     def add_database_record(self, new_databases: list[DatabaseData]) -> None:
         self._cur.executemany("INSERT INTO databases VALUES (?, ?)", new_databases)
         self._con.commit()
+
+    def clean_db(self, evalue_cutoff, max_seqs):
+        # self._cur.execute("SELECT * FROM hits where (query, hit) in (SELECT query, hit FROM hits ORDER by evalue LIMIT 10)").fetchall()
+
+        clean_evalue_command = "DELETE FROM hits where evalue > ?"
+        self._cur.execute(clean_evalue_command, (evalue_cutoff,))
+
+        clean_low_hits_command = """
+            DELETE
+            FROM hits
+            where (query, hit) in (
+                SELECT rs.query, rs.hit
+                FROM (
+                    SELECT query, hit,
+                    Rank() over (
+                        Partition BY query
+                        ORDER BY evalue ASC
+                    )
+                    AS Rank FROM hits
+                )
+                rs WHERE Rank > ?
+            )
+        """
+        self._cur.execute(clean_low_hits_command, (max_seqs,))
+        self._con.commit()
+
+        # breakpoint()
+        #data = self._cur.execute("SELECT * FROM hits WHERE hit IN (SELECT * FROM hits ORDER by evalue) LIMIT 10")
+
+        # self._cur.executemany("DELETE FROM Table hits WHERE query NOT IN (SELECT TOP 10 ID FROM Table)")
+        # self._con.commit()
 
     def __del__(self) -> None:
         self._con.close()

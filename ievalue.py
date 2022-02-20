@@ -1,32 +1,29 @@
-import sys
 import shlex
 import subprocess
+import argparse
 from typing import Optional, cast, Any, Union
 from ievalue_db import IevalueDB, DatabaseData, HitData, DbIdx, HitIdx
 
 # TODO:
 # * change ValueError to something better
 
-# TODO:
-# Verify numbers and add more
 
-
-def get_needed_defaults(program_args: list[str]) -> float:
+def get_needed_defaults(program_args: list[str]) -> tuple[float, int]:
     program = program_args[0]
     needed_defaults: dict[str, Any] = {}
     defaults: dict[str, dict[str, Any]] = {
-        "blast": {"evalue_cutoff": 10},
-        "mmseqs": {"evalue_cutoff": 1.000e-03},
-        "diamond": {"evalue_cutoff": 0.001},
+        "blast": {"evalue_cutoff": 10.0, "max_target_seqs": 500},
+        "mmseqs": {"evalue_cutoff": 1.000e-03, "max_target_seqs": 300},
+        "diamond": {"evalue_cutoff": 0.001, "max_target_seqs": 25},
     }
     for needed_arg in defaults[program]:
         val, _ = normalize_args(program_args, needed_arg)
         if val:
-            needed_defaults[needed_arg] = float(val)
+            needed_defaults[needed_arg] = type(defaults[program][needed_arg])(val)
         else:
             needed_defaults[needed_arg] = defaults[program][needed_arg]
 
-    return needed_defaults["evalue_cutoff"]
+    return needed_defaults["evalue_cutoff"], needed_defaults["max_target_seqs"]
 
 
 def normalize_args(program_args: list[str], arg: str) -> tuple[Optional[str], Optional[int]]:
@@ -34,31 +31,53 @@ def normalize_args(program_args: list[str], arg: str) -> tuple[Optional[str], Op
     program = program_args[0]
     needed = ["db", "out", "query"]
     normalized_keywords: dict[str, dict[str, Union[str, list[str], int]]] = {
-        "blastp": {"db": "-db", "out": "-out", "query": "-query", "evalue_cutoff": "-evalue"},
-        "diamond": {"db": "-d", "out": "-o", "query": "-q", "evalue_cutoff": "-e"},
-        "mmseqs": {"db": 3, "out": 4, "query": 2, "evalue_cutoff": ["-e", "--evalue"]},
+        "blastp": {
+            "db": "-db",
+            "out": "-out",
+            "query": "-query",
+            "evalue_cutoff": "-evalue",
+            "max_target_seqs": "-max_target_seqs",
+        },
+        "diamond": {
+            "db": ["--db", "-d"],
+            "out": ["--out", "-o"],
+            "query": ["--query", "-q"],
+            "evalue_cutoff": ["--evalue", "-e"],
+            "max_target_seqs": ["max-target-seqs", "-k"],
+        },
+        "mmseqs": {
+            "db": 3,
+            "out": 4,
+            "query": 2,
+            "evalue_cutoff": ["--evalue", "-e"],
+            "max_target_seqs": "--max-seqs",
+        },
     }
-    idx = normalized_keywords[program][arg]
-    if isinstance(idx, str):
+    kwarg = normalized_keywords[program][arg]
+    idx = None
+    value = None
+    if isinstance(kwarg, str):
         try:
-            idx = program_args.index(idx) + 1
+            idx = program_args.index(kwarg) + 1
+            value = program_args[idx]
         except ValueError:
-            if arg not in needed:
-                return None, None
-            raise ValueError(f"Could not find {arg}")
-
-    elif isinstance(idx, list):
-        for variation in idx:
+            if arg in needed:
+                raise ValueError(f"Could not find needed input: {arg}")
+    elif isinstance(kwarg, list):
+        for variation in kwarg:
             try:
                 idx = program_args.index(variation) + 1
+                value = program_args[idx]
                 break
-            except KeyError:
+            except ValueError:
                 pass
         else:
-            # since this is not for any needed keywords, we can skip this for now
-            return None, None
+            if arg in needed:
+                raise ValueError(f"Could not find needed input: {arg}")
+    elif isinstance(kwarg, int):
+        idx = kwarg
+        value = program_args[idx]
 
-    value = program_args[idx]
     return value, idx
 
 
@@ -198,27 +217,29 @@ def run_program(program_args, delta_dbs: str, is_delta: bool) -> None:
         raise ValueError(f"Running Program Failed: {delta_args}")
 
 
-def deconstruct_call(program_call: str, path: str) -> tuple[str, str, str, str, float, list[str]]:
-    # TODO add verification that needed kwargs are in the call
+def deconstruct_call(program_call: str, path: str) -> tuple[str, str, str, str, float, int, list[str]]:
     program_args = shlex.split(program_call)
     program = program_args[0]
-    query, _ = normalize_args(program_args, "query")
-    db, _ = normalize_args(program_args, "db")
-    out, out_idx = normalize_args(program_args, "out")
+    query, _ = cast(tuple[str, int], normalize_args(program_args, "query"))
+    db, _ = cast(tuple[str, int], normalize_args(program_args, "db"))
+    out, out_idx = cast(tuple[str, int], normalize_args(program_args, "out"))
     out = path + out
     program_args[out_idx] = out
-    evalue = get_needed_defaults(program_args)
+    evalue, max_seqs = get_needed_defaults(program_args)
 
-    return program, query, db, out, evalue, program_args
+    return program, query, db, out, evalue, max_seqs, program_args
 
 
-def calculate_updated_evalues(hits: list[HitData], total_residues: int, partial_residues: int) -> list[HitData]:
+def calculate_updated_evalues(
+    hits: list[HitData], total_residues: int, partial_residues: int, evalue_cutoff: float
+) -> list[HitData]:
     updates: list[HitData] = []
     for hit in hits:
         scaling_factor = (1.0 * total_residues) / (1.0 * partial_residues)
         evalue = cast(float, hit[HitIdx.EVALUE]) * scaling_factor  # float for type checker
-        updated_hit = (hit[HitIdx.QUERY], hit[HitIdx.HIT], evalue, hit[HitIdx.THE_REST])
-        updates.append(updated_hit)  # type: ignore
+        if evalue <= evalue_cutoff:
+            updated_hit = (hit[HitIdx.QUERY], hit[HitIdx.HIT], evalue, hit[HitIdx.THE_REST])
+            updates.append(cast(tuple[str, str, float, str], updated_hit))
 
     return updates
 
@@ -241,7 +262,9 @@ def parse_delta_db(out_file_name: str, is_delta: bool) -> list[HitData]:
     return hits
 
 
-def write_updated_output(query_file_name: str, out_file_name: str, evalue_cutoff: float, db_client) -> None:
+def write_updated_output(
+    query_file_name: str, out_file_name: str, evalue_cutoff: float, max_seqs: int, db_client
+) -> None:
     out_file_name = out_file_name.split(".")[0] + ".m8"
     with open(query_file_name, "r") as query_f, open(out_file_name, "w") as out_f:
         to_print = ""
@@ -249,7 +272,7 @@ def write_updated_output(query_file_name: str, out_file_name: str, evalue_cutoff
             if line.startswith(">"):
                 query = line.strip()[1:]
                 # values = query, hit, evalue
-                for hit in db_client.get_query(query):
+                for hit in db_client.get_query(query)[:max_seqs]:
                     evalue = hit[HitIdx.EVALUE]
                     if evalue <= evalue_cutoff:
                         the_rest = hit[HitIdx.THE_REST].split("\t")
@@ -258,12 +281,11 @@ def write_updated_output(query_file_name: str, out_file_name: str, evalue_cutoff
         out_f.write(to_print)
 
 
-def main(program_call: str, path: str) -> None:
+def main(program_call: str, path: str, clean_db: bool) -> None:
     if path and path[-1] != "/":
         path += "/"
     db_client = IevalueDB(path)
-    program, query, db, out, evalue_cutoff, program_args = deconstruct_call(program_call, path)
-
+    program, query, db, out, evalue_cutoff, max_seqs, program_args = deconstruct_call(program_call, path)
 
     prev_dbs, prev_residues = [], 0
     if prev_data := db_client.get_db_info():
@@ -300,10 +322,11 @@ def main(program_call: str, path: str) -> None:
 
         # get the new results and add them to the database
         delta_hits = parse_delta_db(out, is_delta=True)
-        updated_delta_hits = calculate_updated_evalues(delta_hits, total_residues, delta_residue)
+        updated_delta_hits = calculate_updated_evalues(delta_hits, total_residues, delta_residue, evalue_cutoff)
         db_client.insert_hits(updated_delta_hits)
-
-        write_updated_output(query, out, evalue_cutoff, db_client)
+        if clean_db:
+            db_client.clean_db(evalue_cutoff, max_seqs)
+        write_updated_output(query, out, evalue_cutoff, max_seqs, db_client)
 
     else:
         run_program(program_args, delta_dbs, is_delta=False)
@@ -312,12 +335,9 @@ def main(program_call: str, path: str) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 2:
-        _path = ""
-        if len(sys.argv) == 3:
-            _path = sys.argv[2]
-        elif len(sys.argv) > 3:
-            print("Error: Too many input arguments")
-        main(sys.argv[1], _path)
-    else:
-        raise ValueError("Error: Need program kwargs")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("program_call", type=str)  # TODO, required=True)
+    parser.add_argument("--path", type=str, default="")
+    parser.add_argument("--clean_db", action=argparse.BooleanOptionalAction)
+    args = parser.parse_args()
+    main(args.program_call, args.path, args.clean_db)

@@ -2,11 +2,23 @@ import shlex
 import subprocess
 import argparse
 from collections import defaultdict
-from typing import Optional, cast, Any, Union
-from ievalue_db import IevalueDB, DatabaseData, HitData, DbIdx, HitIdx
+from typing import Optional, cast, Any, Union, Final
+from ievalue_db import (
+    IevalueDB,
+    DatabaseData,
+    HitData,
+    DATABASE_IDX,
+    RESIDUE_IDX,
+    QUERY_IDX,
+    HIT_IDX,
+    EVALUE_IDX,
+    THE_REST_IDX,
+)
 
 # TODO:
 # * change ValueError to something better
+
+test: Final = 0
 
 
 def get_needed_defaults(program_args: list[str]) -> tuple[float, int]:
@@ -233,15 +245,14 @@ def deconstruct_call(program_call: str, path: str) -> tuple[str, str, str, str, 
 
 def calculate_updated_evalues(
     hits: list[HitData], total_residues: int, partial_residues: int, evalue_cutoff: float
-) -> list[HitData]:
+) -> dict[str, list[HitData]]:
     updates = defaultdict(list)
     scaling_factor = (1.0 * total_residues) / (1.0 * partial_residues)
-    print('aaa', scaling_factor)
     for hit in hits:
-        evalue = cast(float, hit[HitIdx.EVALUE]) * scaling_factor  # float for type checker
+        evalue = hit[EVALUE_IDX] * scaling_factor
         if evalue <= evalue_cutoff:
-            updated_hit = (hit[HitIdx.QUERY], hit[HitIdx.HIT], evalue, hit[HitIdx.THE_REST])
-            updates[str(hit[HitIdx.QUERY])].append(cast(tuple[str, str, float, str], updated_hit))
+            updated_hit = (hit[QUERY_IDX], hit[HIT_IDX], evalue, hit[THE_REST_IDX])
+            updates[hit[QUERY_IDX]].append(updated_hit)
 
     return updates
 
@@ -265,8 +276,13 @@ def parse_delta_db(out_file_name: str, is_delta: bool) -> list[HitData]:
 
 
 def write_updated_output(
-    query_file_name: str, out_file_name: str, evalue_cutoff: float, max_seqs: int, db_client, path, delta_data, updated_delta_hits, prev_data
-) -> None:
+    query_file_name: str,
+    out_file_name: str,
+    evalue_cutoff: float,
+    max_seqs: int,
+    db_client: IevalueDB,
+    updated_delta_hits: dict[str, list[HitData]],
+) -> list[HitData]:
     out_file_name = out_file_name.split(".")[0] + ".m8"
     hits_to_keep = []
     with open(query_file_name, "r") as query_f, open(out_file_name, "w") as out_f:
@@ -274,31 +290,27 @@ def write_updated_output(
         for line in query_f:
             if line.startswith(">"):
                 query = line.strip()[1:]
-                # values = query, hit, evalue
-                # if query == "WP_013226005.1":
-                #     print(db_client.get_query(query, max_seqs))
+
+                # combine the new and old hits and keep the top <max_seqs>
+                # that have an evalue_cutoff <= <evalue_cutoff>
                 hits = updated_delta_hits[query]
-                hits.extend(db_client.get_query(query))
-                hits = sorted(hits, key=lambda x: x[2])
+                previous_hits = db_client.get_query(query)
+                hits.extend(previous_hits)
+                hits = sorted(hits, key=lambda x: x[EVALUE_IDX])
                 for hit in hits[:max_seqs]:
-                    evalue = hit[HitIdx.EVALUE]
+                    evalue = hit[EVALUE_IDX]
                     if evalue <= evalue_cutoff:
                         hits_to_keep.append(hit)
-                        the_rest = hit[HitIdx.THE_REST].split("\t")
-                        all_values = [query, hit[HitIdx.HIT]] + the_rest[:-1] + [f"{evalue:.3}"] + [the_rest[-1]]
+                        # format for the text file
+                        the_rest = hit[THE_REST_IDX].split("\t")
+                        all_values = [query, hit[HIT_IDX]] + the_rest[:-1] + [f"{evalue:.3}"] + [the_rest[-1]]
                         to_print += "\t".join(all_values) + "\n"
         out_f.write(to_print)
 
-    db_client.close()
-    db_client.del_old()
-    new_db_client = IevalueDB(path)
-    new_db_client.insert_hits(hits_to_keep)
-    new_db_client.add_database_record(prev_data)
-    new_db_client.add_database_record(delta_data)
-    new_db_client.close()
+    return hits_to_keep
 
 
-def main(program_call: str, path: str, clean_db: bool) -> None:
+def main(program_call: str, path: str) -> None:
     if path and path[-1] != "/":
         path += "/"
     db_client = IevalueDB(path)
@@ -307,8 +319,8 @@ def main(program_call: str, path: str, clean_db: bool) -> None:
     prev_dbs, prev_residues = [], 0
     if prev_data := db_client.get_db_info():
         prev_data = cast(list[DatabaseData], prev_data)  # for the type checker
-        prev_dbs = cast(list[Optional[str]], [db_data[DbIdx.DATABASE] for db_data in prev_data])
-        prev_residues = int(sum([db_data[DbIdx.RESIDUE] for db_data in prev_data]))
+        prev_dbs = cast(list[Optional[str]], [db_data[DATABASE_IDX] for db_data in prev_data])
+        prev_residues = int(sum([db_data[RESIDUE_IDX] for db_data in prev_data]))
 
     delta_dbs = ""
     delta_parts: list[str] = []
@@ -324,13 +336,10 @@ def main(program_call: str, path: str, clean_db: bool) -> None:
         ]
 
     delta_data = get_delta_sizes(delta_parts, program)
-    print(db_client.get_db_info(), delta_data)
 
-    # add the size of the residues for each database
-    db_client.add_database_record(delta_data)
     if prev_residues:
         # update evalues from the old hits
-        delta_residue = cast(int, sum([delta_db[DbIdx.RESIDUE] for delta_db in delta_data]))  # int for type checker
+        delta_residue = sum([delta_db[RESIDUE_IDX] for delta_db in delta_data])
         total_residues = prev_residues + delta_residue
         db_client.update_old_evalues(total_residues, prev_residues)
 
@@ -340,21 +349,26 @@ def main(program_call: str, path: str, clean_db: bool) -> None:
         # get the new results and add them to the database
         delta_hits = parse_delta_db(out, is_delta=True)
         updated_delta_hits = calculate_updated_evalues(delta_hits, total_residues, delta_residue, evalue_cutoff)
-        # db_client.insert_hits(updated_delta_hits)
-        if clean_db:
-            db_client.clean_db(evalue_cutoff, max_seqs)
-        write_updated_output(query, out, evalue_cutoff, max_seqs, db_client, path, delta_data, updated_delta_hits, prev_data)
+        hits_to_keep = write_updated_output(query, out, evalue_cutoff, max_seqs, db_client, updated_delta_hits)
+
+        print("Output is ready, cleaning up database")
+
+        db_client.close()
+        db_client.del_old()
+        new_db_client = IevalueDB(path)
+        new_db_client.insert_hits(hits_to_keep)
+        new_db_client.add_database_record(prev_data + delta_data)  # type: ignore
 
     else:
         run_program(program_args, delta_dbs, is_delta=False)
         delta_hits = parse_delta_db(out, is_delta=False)
         db_client.insert_hits(delta_hits)
+        db_client.add_database_record(delta_data)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("program_call", type=str)  # TODO, required=True)
+    parser.add_argument("program_call", type=str)
     parser.add_argument("--path", type=str, default="")
-    parser.add_argument("--clean_db", action=argparse.BooleanOptionalAction)
     args = parser.parse_args()
-    main(args.program_call, args.path, args.clean_db)
+    main(args.program_call, args.path)

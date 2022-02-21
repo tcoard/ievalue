@@ -1,7 +1,6 @@
 import sqlite3
 import os
-from enum import IntEnum
-from typing import Union
+from typing import Union, Final
 
 
 # TODO save previous database, so that if things mess up part way through, we can revert to that
@@ -12,20 +11,17 @@ DatabaseData = Union[tuple[str, int], tuple[str, int, str]]
 HitData = tuple[str, str, float, str]
 
 
-# These are so that we can save time by returning the default list of tuples from sqlite,
-# but won't accidentally call the wrong index.
-class DbIdx(IntEnum):
-    DATABASE = 0
-    RESIDUE = 1
-    FASTAS = 1
+# This was the best comprimise between speed, code readability, and type correctness.
+# Putting the data into objects slowed the code down too much and Final is needed for the type checker.
+DATABASE_IDX: Final = 0
+RESIDUE_IDX: Final = 1
 
 
-class HitIdx(IntEnum):
-    QUERY = 0
-    HIT = 1
-    EVALUE = 2
-    THE_REST = 3
-    HIT_PK = 4
+QUERY_IDX: Final = 0
+HIT_IDX: Final = 1
+EVALUE_IDX: Final = 2
+THE_REST_IDX: Final = 3
+HIT_PK_IDX: Final = 4
 
 
 class IevalueDB:
@@ -48,14 +44,12 @@ class IevalueDB:
         )
         self._cur.execute(
             """CREATE TABLE hits
-                       (query text NOT NULL, hit text NOT NULL, evalue float NOT NULL, the_rest TEXT NOT NULL)"""  # WITHOUT ROWID"""
+                       (query text NOT NULL, hit text NOT NULL, evalue float NOT NULL, the_rest TEXT NOT NULL)"""
         )
         self._cur.execute(
             """CREATE INDEX hits_idx on hits (query)"""
         )
         self._con.commit()
-        # (query text NOT NULL, hit text NOT NULL, evalue float NOT NULL, the_rest TEXT PRIMAY KEY)"""# WITHOUT ROWID"""
-        # ;(query text NOT NULL, hit text NOT NULL, evalue float NOT NULL, the_rest text NOT NULL, CONSTRAINT hit_pk PRIMARY KEY (query, hit, the_rest)) WITHOUT ROWID"""
 
     def get_all_hits(self) -> list[HitData]:
         return self._cur.execute("SELECT * from hits").fetchall()
@@ -82,9 +76,8 @@ class IevalueDB:
         self._cur.executemany("INSERT INTO databases VALUES (?, ?)", new_databases)
         self._con.commit()
 
+    # Currently unused
     def clean_db(self, evalue_cutoff, max_seqs):
-        # self._cur.execute("SELECT * FROM hits where (query, hit) in (SELECT query, hit FROM hits ORDER by evalue LIMIT 10)").fetchall()
-
         clean_evalue_command = "DELETE FROM hits where evalue > ?"
         self._cur.execute(clean_evalue_command, (evalue_cutoff,))
 
@@ -106,12 +99,6 @@ class IevalueDB:
         """
         self._cur.execute(clean_low_hits_command, (max_seqs,))
         self._con.commit()
-
-        # breakpoint()
-        #data = self._cur.execute("SELECT * FROM hits WHERE hit IN (SELECT * FROM hits ORDER by evalue) LIMIT 10")
-
-        # self._cur.executemany("DELETE FROM Table hits WHERE query NOT IN (SELECT TOP 10 ID FROM Table)")
-        # self._con.commit()
 
     def del_old(self):
         os.remove(self.database)

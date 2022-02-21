@@ -1,6 +1,7 @@
 import shlex
 import subprocess
 import argparse
+from collections import defaultdict
 from typing import Optional, cast, Any, Union
 from ievalue_db import IevalueDB, DatabaseData, HitData, DbIdx, HitIdx
 
@@ -233,13 +234,14 @@ def deconstruct_call(program_call: str, path: str) -> tuple[str, str, str, str, 
 def calculate_updated_evalues(
     hits: list[HitData], total_residues: int, partial_residues: int, evalue_cutoff: float
 ) -> list[HitData]:
-    updates: list[HitData] = []
+    updates = defaultdict(list)
+    scaling_factor = (1.0 * total_residues) / (1.0 * partial_residues)
+    print('aaa', scaling_factor)
     for hit in hits:
-        scaling_factor = (1.0 * total_residues) / (1.0 * partial_residues)
         evalue = cast(float, hit[HitIdx.EVALUE]) * scaling_factor  # float for type checker
         if evalue <= evalue_cutoff:
             updated_hit = (hit[HitIdx.QUERY], hit[HitIdx.HIT], evalue, hit[HitIdx.THE_REST])
-            updates.append(cast(tuple[str, str, float, str], updated_hit))
+            updates[str(hit[HitIdx.QUERY])].append(cast(tuple[str, str, float, str], updated_hit))
 
     return updates
 
@@ -263,22 +265,37 @@ def parse_delta_db(out_file_name: str, is_delta: bool) -> list[HitData]:
 
 
 def write_updated_output(
-    query_file_name: str, out_file_name: str, evalue_cutoff: float, max_seqs: int, db_client
+    query_file_name: str, out_file_name: str, evalue_cutoff: float, max_seqs: int, db_client, path, delta_data, updated_delta_hits, prev_data
 ) -> None:
     out_file_name = out_file_name.split(".")[0] + ".m8"
+    hits_to_keep = []
     with open(query_file_name, "r") as query_f, open(out_file_name, "w") as out_f:
         to_print = ""
         for line in query_f:
             if line.startswith(">"):
                 query = line.strip()[1:]
                 # values = query, hit, evalue
-                for hit in db_client.get_query(query)[:max_seqs]:
+                # if query == "WP_013226005.1":
+                #     print(db_client.get_query(query, max_seqs))
+                hits = updated_delta_hits[query]
+                hits.extend(db_client.get_query(query))
+                hits = sorted(hits, key=lambda x: x[2])
+                for hit in hits[:max_seqs]:
                     evalue = hit[HitIdx.EVALUE]
                     if evalue <= evalue_cutoff:
+                        hits_to_keep.append(hit)
                         the_rest = hit[HitIdx.THE_REST].split("\t")
                         all_values = [query, hit[HitIdx.HIT]] + the_rest[:-1] + [f"{evalue:.3}"] + [the_rest[-1]]
                         to_print += "\t".join(all_values) + "\n"
         out_f.write(to_print)
+
+    db_client.close()
+    db_client.del_old()
+    new_db_client = IevalueDB(path)
+    new_db_client.insert_hits(hits_to_keep)
+    new_db_client.add_database_record(prev_data)
+    new_db_client.add_database_record(delta_data)
+    new_db_client.close()
 
 
 def main(program_call: str, path: str, clean_db: bool) -> None:
@@ -307,10 +324,10 @@ def main(program_call: str, path: str, clean_db: bool) -> None:
         ]
 
     delta_data = get_delta_sizes(delta_parts, program)
+    print(db_client.get_db_info(), delta_data)
 
     # add the size of the residues for each database
     db_client.add_database_record(delta_data)
-
     if prev_residues:
         # update evalues from the old hits
         delta_residue = cast(int, sum([delta_db[DbIdx.RESIDUE] for delta_db in delta_data]))  # int for type checker
@@ -323,10 +340,10 @@ def main(program_call: str, path: str, clean_db: bool) -> None:
         # get the new results and add them to the database
         delta_hits = parse_delta_db(out, is_delta=True)
         updated_delta_hits = calculate_updated_evalues(delta_hits, total_residues, delta_residue, evalue_cutoff)
-        db_client.insert_hits(updated_delta_hits)
+        # db_client.insert_hits(updated_delta_hits)
         if clean_db:
             db_client.clean_db(evalue_cutoff, max_seqs)
-        write_updated_output(query, out, evalue_cutoff, max_seqs, db_client)
+        write_updated_output(query, out, evalue_cutoff, max_seqs, db_client, path, delta_data, updated_delta_hits, prev_data)
 
     else:
         run_program(program_args, delta_dbs, is_delta=False)

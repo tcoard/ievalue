@@ -1,5 +1,5 @@
 import sqlite3
-import os.path
+import os
 from enum import IntEnum
 from typing import Union
 
@@ -31,6 +31,7 @@ class HitIdx(IntEnum):
 class IevalueDB:
     def __init__(self, db_path: str) -> None:
         database = db_path + "ievalue_metadata.db"
+        self.database = database
         self._con = sqlite3.connect(database)
         self._con.execute("PRAGMA synchronous = OFF")
         self._con.execute("PRAGMA journal_mode = OFF")
@@ -60,7 +61,7 @@ class IevalueDB:
         return self._cur.execute("SELECT * from hits").fetchall()
 
     def get_query(self, query: str) -> list[HitData]:
-        return self._cur.execute("SELECT * FROM hits WHERE query = ? ORDER BY evalue", (query,)).fetchall()
+        return self._cur.execute("SELECT * FROM hits WHERE query = ?", (query,)).fetchall()
 
     def insert_hits(self, hits: list[HitData]) -> None:
         self._cur.executemany("INSERT INTO hits VALUES (?, ?, ?, ?)", hits)
@@ -111,6 +112,12 @@ class IevalueDB:
 
         # self._cur.executemany("DELETE FROM Table hits WHERE query NOT IN (SELECT TOP 10 ID FROM Table)")
         # self._con.commit()
+
+    def del_old(self):
+        os.remove(self.database)
+
+    def close(self) -> None:
+        self._con.close()
 
     def __del__(self) -> None:
         self._con.close()

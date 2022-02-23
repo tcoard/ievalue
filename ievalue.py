@@ -25,7 +25,7 @@ def get_needed_defaults(program_args: list[str]) -> tuple[float, int]:
     program = program_args[0]
     needed_defaults: dict[str, Any] = {}
     defaults: dict[str, dict[str, Any]] = {
-        "blast": {"evalue_cutoff": 10.0, "max_target_seqs": 500},
+        "blastp": {"evalue_cutoff": 10.0, "max_target_seqs": 500},
         "mmseqs": {"evalue_cutoff": 1.000e-03, "max_target_seqs": 300},
         "diamond": {"evalue_cutoff": 0.001, "max_target_seqs": 25},
     }
@@ -199,7 +199,7 @@ def get_blast_delta_db(
     command = [
         "blastdb_aliastool",
         "-dbtype",
-        search_type,
+        "prot",  # hard coding until we support nucleotides
         "-dblist",
         delta_dbs,
         "-out",

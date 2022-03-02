@@ -1,8 +1,10 @@
 import shlex
+import os
 import subprocess
 import argparse
+import configparser
 from collections import defaultdict
-from typing import Optional, cast, Any, Union, Final
+from typing import Optional, cast, Any
 from ievalue_db import (
     IevalueDB,
     DatabaseData,
@@ -18,65 +20,45 @@ from ievalue_db import (
 # TODO:
 # * change ValueError to something better
 
-test: Final = 0
 
-
-def get_needed_defaults(program_args: list[str]) -> tuple[float, int]:
-    program = program_args[0]
+def get_needed_defaults(program_args: list[str], default_values, normalized_keywords) -> tuple[float, int]:
     needed_defaults: dict[str, Any] = {}
-    defaults: dict[str, dict[str, Any]] = {
-        "blastp": {"evalue_cutoff": 10.0, "max_target_seqs": 500},
-        "mmseqs": {"evalue_cutoff": 1.000e-03, "max_target_seqs": 300},
-        "diamond": {"evalue_cutoff": 0.001, "max_target_seqs": 25},
-    }
-    for needed_arg in defaults[program]:
-        val, _ = normalize_args(program_args, needed_arg)
+    # defaults: dict[str, dict[str, Any]] = {
+    #     "blastp": {"evalue_cutoff": 10.0, "max_target_seqs": 500},
+    #     "mmseqs": {"evalue_cutoff": 1.000e-03, "max_target_seqs": 300},
+    #     "diamond": {"evalue_cutoff": 0.001, "max_target_seqs": 25},
+    # }
+    for needed_arg in default_values:
+        val, _ = normalize_args(program_args, needed_arg, normalized_keywords)
         if val:
-            needed_defaults[needed_arg] = type(defaults[program][needed_arg])(val)
+            needed_val = val
         else:
-            needed_defaults[needed_arg] = defaults[program][needed_arg]
+            needed_val = default_values[needed_arg]
+
+        if needed_val.isnumeric():
+            if "." in default_values[needed_arg]:
+                needed_val = float(needed_val)  # type: ignore
+            else:
+                needed_val = int(needed_val)  # type: ignore
+
+        needed_defaults[needed_arg] = needed_val
 
     return needed_defaults["evalue_cutoff"], needed_defaults["max_target_seqs"]
 
 
-def normalize_args(program_args: list[str], arg: str) -> tuple[Optional[str], Optional[int]]:
+def normalize_args(program_args: list[str], arg: str, normalized_keywords) -> tuple[Optional[str], Optional[int]]:
     # this will be a normalization layer from application specific keywords to normalized keyword
-    program = program_args[0]
     needed = ["db", "out", "query"]
-    normalized_keywords: dict[str, dict[str, Union[str, list[str], int]]] = {
-        "blastp": {
-            "db": "-db",
-            "out": "-out",
-            "query": "-query",
-            "evalue_cutoff": "-evalue",
-            "max_target_seqs": "-max_target_seqs",
-        },
-        "diamond": {
-            "db": ["--db", "-d"],
-            "out": ["--out", "-o"],
-            "query": ["--query", "-q"],
-            "evalue_cutoff": ["--evalue", "-e"],
-            "max_target_seqs": ["max-target-seqs", "-k"],
-        },
-        "mmseqs": {
-            "db": 3,
-            "out": 4,
-            "query": 2,
-            "evalue_cutoff": ["--evalue", "-e"],
-            "max_target_seqs": "--max-seqs",
-        },
-    }
-    kwarg = normalized_keywords[program][arg]
+    kwarg = normalized_keywords[arg]
+    if kwarg.isnumeric():
+        kwarg = int(kwarg)
+    else:
+        # if there is only one element, this will make a list of one element
+        kwarg = kwarg.split(",")
+
     idx = None
     value = None
-    if isinstance(kwarg, str):
-        try:
-            idx = program_args.index(kwarg) + 1
-            value = program_args[idx]
-        except ValueError:
-            if arg in needed:
-                raise ValueError(f"Could not find needed input: {arg}")
-    elif isinstance(kwarg, list):
+    if isinstance(kwarg, list):
         for variation in kwarg:
             try:
                 idx = program_args.index(variation) + 1
@@ -94,10 +76,10 @@ def normalize_args(program_args: list[str], arg: str) -> tuple[Optional[str], Op
     return value, idx
 
 
-def get_delta_sizes(dbs: list[str], search_type: str) -> list[DatabaseData]:
+def get_delta_sizes(dbs: list[str], search_type: str, database_parts_function) -> list[DatabaseData]:
     db_sizes: list[DatabaseData] = []
     for db in dbs:
-        db_residue, _ = read_database_parts(db, search_type)
+        db_residue, _ = read_database_parts(db, search_type, database_parts_function)
         db_sizes.append((db, db_residue))
     return db_sizes
 
@@ -164,15 +146,10 @@ def read_diamond_database_parts(db_name: str, search_type: str) -> tuple[int, li
     return db_residue, parts
 
 
-def read_database_parts(db_name: str, search_type: str) -> tuple[int, list[str]]:
+def read_database_parts(db_name: str, search_type: str, database_parts_function) -> tuple[int, list[str]]:
     db_residue = 0
     parts: list[str] = []
-    if search_type == "blastp":
-        db_residue, parts = read_blast_database_parts(db_name, search_type)
-    elif search_type == "mmseqs":
-        db_residue, parts = read_mmseqs_database_parts(db_name, search_type)
-    elif search_type == "diamond":
-        db_residue, parts = read_diamond_database_parts(db_name, search_type)
+    db_residue, parts = database_parts_function(db_name, search_type)
 
     if db_residue == 0:
         raise ValueError("Error finding database information")
@@ -181,9 +158,9 @@ def read_database_parts(db_name: str, search_type: str) -> tuple[int, list[str]]
 
 
 def get_blast_delta_db(
-    blast_database: str, search_type: str, out_file_name: str, prev_dbs: list[Optional[str]]
+    blast_database: str, search_type: str, out_file_name: str, prev_dbs: list[Optional[str]], database_parts_function
 ) -> tuple[str, list[str]]:
-    _, curr_dbs = read_database_parts(blast_database, search_type)
+    _, curr_dbs = read_database_parts(blast_database, search_type, database_parts_function)
     delta_parts = list(set(curr_dbs).difference(set(prev_dbs)))
 
     if len(delta_parts) == 0:
@@ -215,13 +192,13 @@ def get_blast_delta_db(
     return delta_dbs, delta_parts
 
 
-def run_program(program_args, delta_dbs: str, is_delta: bool) -> None:
+def run_program(program_args, delta_dbs: str, is_delta: bool, normalized_keywords) -> None:
     delta_args = program_args.copy()
 
-    _, db_idx = normalize_args(delta_args, "db")
+    _, db_idx = normalize_args(delta_args, "db", normalized_keywords)
     delta_args[db_idx] = delta_dbs
     if is_delta:
-        _, out_idx = normalize_args(delta_args, "out")
+        _, out_idx = normalize_args(delta_args, "out", normalized_keywords)
         delta_args[out_idx] += "-delta"
 
     try:
@@ -230,15 +207,17 @@ def run_program(program_args, delta_dbs: str, is_delta: bool) -> None:
         raise ValueError(f"Running Program Failed: {delta_args}")
 
 
-def deconstruct_call(program_call: str, path: str) -> tuple[str, str, str, str, float, int, list[str]]:
+def deconstruct_call(
+    program_call: str, path: str, default_values, normalized_keywords
+) -> tuple[str, str, str, str, float, int, list[str]]:
     program_args = shlex.split(program_call)
     program = program_args[0]
-    query, _ = cast(tuple[str, int], normalize_args(program_args, "query"))
-    db, _ = cast(tuple[str, int], normalize_args(program_args, "db"))
-    out, out_idx = cast(tuple[str, int], normalize_args(program_args, "out"))
+    query, _ = cast(tuple[str, int], normalize_args(program_args, "query", normalized_keywords))
+    db, _ = cast(tuple[str, int], normalize_args(program_args, "db", normalized_keywords))
+    out, out_idx = cast(tuple[str, int], normalize_args(program_args, "out", normalized_keywords))
     out = path + out
     program_args[out_idx] = out
-    evalue, max_seqs = get_needed_defaults(program_args)
+    evalue, max_seqs = get_needed_defaults(program_args, default_values, normalized_keywords)
 
     return program, query, db, out, evalue, max_seqs, program_args
 
@@ -311,10 +290,24 @@ def write_updated_output(
 
 
 def main(program_call: str, path: str) -> None:
+    config = configparser.ConfigParser()
+    # move this later
+    program = program_call.split()[0]
+    config.read(f"{os.path.abspath(os.path.dirname(__file__))}/configs/{program}.ini")
+    print(f"{os.path.abspath(os.path.dirname(__file__))}/configs/{program}.ini")
+    print(config.sections())
+    default_values = config["DEFAULT_VALUES"]
+    normalized_keywords = config["ARG_NAMES_OR_LOC"]
+    database_parts_function = config["ARG_NAMES_OR_LOC"]
+    database_parts_function = globals()[config["OTHER"]["database_parts_function"]]
+    # output_file_type = config["OTHER"]["m8"]
+
     if path and path[-1] != "/":
         path += "/"
     db_client = IevalueDB(path)
-    program, query, db, out, evalue_cutoff, max_seqs, program_args = deconstruct_call(program_call, path)
+    program, query, db, out, evalue_cutoff, max_seqs, program_args = deconstruct_call(
+        program_call, path, default_values, normalized_keywords
+    )
 
     prev_dbs, prev_residues = [], 0
     if prev_data := db_client.get_db_info():
@@ -326,7 +319,7 @@ def main(program_call: str, path: str) -> None:
     delta_parts: list[str] = []
     if program == "blastp":
         # dbs that have not been searched on yet
-        delta_dbs, delta_parts = get_blast_delta_db(db, program, out, prev_dbs)
+        delta_dbs, delta_parts = get_blast_delta_db(db, program, out, prev_dbs, database_parts_function)
         if not delta_dbs:
             return
     else:
@@ -335,7 +328,7 @@ def main(program_call: str, path: str) -> None:
             db,
         ]
 
-    delta_data = get_delta_sizes(delta_parts, program)
+    delta_data = get_delta_sizes(delta_parts, program, database_parts_function)
 
     if prev_residues:
         # update evalues from the old hits
@@ -344,7 +337,7 @@ def main(program_call: str, path: str) -> None:
         db_client.update_old_evalues(total_residues, prev_residues)
 
         # perform blast on just the new dbs
-        run_program(program_args, delta_dbs, is_delta=True)
+        run_program(program_args, delta_dbs, is_delta=True, normalized_keywords=normalized_keywords)
 
         # get the new results and add them to the database
         delta_hits = parse_delta_db(out, is_delta=True)
@@ -360,7 +353,7 @@ def main(program_call: str, path: str) -> None:
         new_db_client.add_database_record(prev_data + delta_data)  # type: ignore
 
     else:
-        run_program(program_args, delta_dbs, is_delta=False)
+        run_program(program_args, delta_dbs, is_delta=False, normalized_keywords=normalized_keywords)
         delta_hits = parse_delta_db(out, is_delta=False)
         db_client.insert_hits(delta_hits)
         db_client.add_database_record(delta_data)

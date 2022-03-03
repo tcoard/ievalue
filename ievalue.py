@@ -23,25 +23,13 @@ from ievalue_db import (
 
 def get_needed_defaults(program_args: list[str], default_values, normalized_keywords) -> tuple[float, int]:
     needed_defaults: dict[str, Any] = {}
-    # defaults: dict[str, dict[str, Any]] = {
-    #     "blastp": {"evalue_cutoff": 10.0, "max_target_seqs": 500},
-    #     "mmseqs": {"evalue_cutoff": 1.000e-03, "max_target_seqs": 300},
-    #     "diamond": {"evalue_cutoff": 0.001, "max_target_seqs": 25},
-    # }
+    default_types = {"evalue_cutoff": float, "max_target_seqs": int}
     for needed_arg in default_values:
         val, _ = normalize_args(program_args, needed_arg, normalized_keywords)
         if val:
-            needed_val = val
+            needed_defaults[needed_arg] = default_types[needed_arg](val)
         else:
-            needed_val = default_values[needed_arg]
-
-        if needed_val.isnumeric():
-            if "." in default_values[needed_arg]:
-                needed_val = float(needed_val)  # type: ignore
-            else:
-                needed_val = int(needed_val)  # type: ignore
-
-        needed_defaults[needed_arg] = needed_val
+            needed_defaults[needed_arg] = default_types[needed_arg](default_values[needed_arg])
 
     return needed_defaults["evalue_cutoff"], needed_defaults["max_target_seqs"]
 
@@ -50,7 +38,7 @@ def normalize_args(program_args: list[str], arg: str, normalized_keywords) -> tu
     # this will be a normalization layer from application specific keywords to normalized keyword
     needed = ["db", "out", "query"]
     kwarg = normalized_keywords[arg]
-    if kwarg.isnumeric():
+    if kwarg.lstrip("-").isnumeric():
         kwarg = int(kwarg)
     else:
         # if there is only one element, this will make a list of one element
@@ -143,6 +131,7 @@ def read_diamond_database_parts(db_name: str, search_type: str) -> tuple[int, li
         line = line.strip()
         if line.startswith("Letters"):
             db_residue = int(line.split(" ")[-1])
+
     return db_residue, parts
 
 
@@ -236,21 +225,26 @@ def calculate_updated_evalues(
     return updates
 
 
-def parse_delta_db(out_file_name: str, is_delta: bool) -> list[HitData]:
+def parse_delta_db(out_file_name: str, output_cols, is_delta: bool) -> list[HitData]:
+    query_idx = int(output_cols["query"])
+    hit_idx = int(output_cols["hit"])
+    evalue_idx = int(output_cols["evalue"])
+
     if is_delta:
         out_file_name = out_file_name + "-delta"
     hits = []
     with open(out_file_name, "r") as f:
         for line in f:
-            result = line.strip().split("\t")
-            hits.append(
-                (
-                    result[0],
-                    result[1],
-                    float(f"{float(result[10]):.5}"),
-                    "\t".join(result[2:10] + [result[11]]),
+            if not line.startswith("#"):
+                result = line.strip().split()
+                hits.append(
+                    (
+                        result[query_idx],
+                        result[hit_idx],
+                        float(f"{float(result[evalue_idx]):.5}"),
+                        "\t".join([result[i] for i in range(len(result)) if i not in [query_idx, hit_idx, evalue_idx]]),
+                    )
                 )
-            )
     return hits
 
 
@@ -261,7 +255,13 @@ def write_updated_output(
     max_seqs: int,
     db_client: IevalueDB,
     updated_delta_hits: dict[str, list[HitData]],
+    output_cols,
 ) -> list[HitData]:
+
+    query_idx = int(output_cols["query"])
+    hit_idx = int(output_cols["hit"])
+    evalue_idx = int(output_cols["evalue"])
+
     out_file_name = out_file_name.split(".")[0] + ".m8"
     hits_to_keep = []
     with open(query_file_name, "r") as query_f, open(out_file_name, "w") as out_f:
@@ -272,6 +272,7 @@ def write_updated_output(
 
                 # combine the new and old hits and keep the top <max_seqs>
                 # that have an evalue_cutoff <= <evalue_cutoff>
+                # breakpoint()
                 hits = updated_delta_hits[query]
                 previous_hits = db_client.get_query(query)
                 hits.extend(previous_hits)
@@ -281,12 +282,36 @@ def write_updated_output(
                     if evalue <= evalue_cutoff:
                         hits_to_keep.append(hit)
                         # format for the text file
-                        the_rest = hit[THE_REST_IDX].split("\t")
-                        all_values = [query, hit[HIT_IDX]] + the_rest[:-1] + [f"{evalue:.3}"] + [the_rest[-1]]
+                        the_rest = hit[THE_REST_IDX].split()
+                        # all_values = [query, hit[HIT_IDX]] + the_rest[:-1] + [f"{evalue:.3}"] + [the_rest[-1]]
+
+                        all_values = []
+                        for i in range(len(the_rest) + 3):
+                            if i == query_idx:
+                                all_values.append(query)
+                            elif i == hit_idx:
+                                all_values.append(hit[HIT_IDX])
+                            elif i == evalue_idx:
+                                all_values.append(f"{evalue:.3}")
+                            else:
+                                all_values.append(the_rest.pop(0))
+
                         to_print += "\t".join(all_values) + "\n"
         out_f.write(to_print)
 
     return hits_to_keep
+
+
+def default_read_database_parts(db_name: str, search_type: str) -> tuple[int, list[str]]:
+    parts = []
+    parts.append(f"{db_name}.fa")
+    db_residue = 0
+    # with open(f"{db_name}.fa", "r") as f:
+    with open(db_name, "r") as f:
+        for line in f:
+            if not line.startswith(">"):
+                db_residue += len(line.strip())
+    return db_residue, parts
 
 
 def main(program_call: str, path: str) -> None:
@@ -294,12 +319,11 @@ def main(program_call: str, path: str) -> None:
     # move this later
     program = program_call.split()[0]
     config.read(f"{os.path.abspath(os.path.dirname(__file__))}/configs/{program}.ini")
-    print(f"{os.path.abspath(os.path.dirname(__file__))}/configs/{program}.ini")
-    print(config.sections())
     default_values = config["DEFAULT_VALUES"]
     normalized_keywords = config["ARG_NAMES_OR_LOC"]
     database_parts_function = config["ARG_NAMES_OR_LOC"]
     database_parts_function = globals()[config["OTHER"]["database_parts_function"]]
+    output_cols = config["OUTPUT_FILE_COLS"]
     # output_file_type = config["OTHER"]["m8"]
 
     if path and path[-1] != "/":
@@ -338,11 +362,13 @@ def main(program_call: str, path: str) -> None:
 
         # perform blast on just the new dbs
         run_program(program_args, delta_dbs, is_delta=True, normalized_keywords=normalized_keywords)
-
+        # breakpoint()
         # get the new results and add them to the database
-        delta_hits = parse_delta_db(out, is_delta=True)
+        delta_hits = parse_delta_db(out, output_cols, is_delta=True)
         updated_delta_hits = calculate_updated_evalues(delta_hits, total_residues, delta_residue, evalue_cutoff)
-        hits_to_keep = write_updated_output(query, out, evalue_cutoff, max_seqs, db_client, updated_delta_hits)
+        hits_to_keep = write_updated_output(
+            query, out, evalue_cutoff, max_seqs, db_client, updated_delta_hits, output_cols
+        )
 
         print("Output is ready, cleaning up database")
 
@@ -354,7 +380,7 @@ def main(program_call: str, path: str) -> None:
 
     else:
         run_program(program_args, delta_dbs, is_delta=False, normalized_keywords=normalized_keywords)
-        delta_hits = parse_delta_db(out, is_delta=False)
+        delta_hits = parse_delta_db(out, output_cols, is_delta=False)
         db_client.insert_hits(delta_hits)
         db_client.add_database_record(delta_data)
 

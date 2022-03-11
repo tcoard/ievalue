@@ -297,7 +297,9 @@ def write_updated_output(
                 previous_hits = db_client.get_query(query)
                 hits.extend(previous_hits)
                 hits = sorted(hits, key=lambda x: x[EVALUE_IDX])
-                for hit in hits[:max_seqs]:
+                if max_seqs > 0:
+                    hits = hits[:max_seqs]
+                for hit in hits:
                     evalue = hit[EVALUE_IDX]
                     if evalue <= evalue_cutoff:
                         hits_to_keep.append(hit)

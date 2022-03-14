@@ -20,6 +20,7 @@ from ievalue_db import (
 # TODO:
 # * change ValueError to something better
 
+CHUNK_SIZE = int(1e+10)  # one gb
 
 def get_needed_defaults(program_args: list[str], default_values, normalized_keywords) -> tuple[float, int]:
     needed_defaults: dict[str, Any] = {}
@@ -29,6 +30,7 @@ def get_needed_defaults(program_args: list[str], default_values, normalized_keyw
         if val:
             needed_defaults[needed_arg] = default_types[needed_arg](val)
         else:
+            print(f"Using default value: {default_values[needed_arg]}")
             needed_defaults[needed_arg] = default_types[needed_arg](default_values[needed_arg])
 
     return needed_defaults["evalue_cutoff"], needed_defaults["max_target_seqs"]
@@ -225,27 +227,31 @@ def calculate_updated_evalues(
     return updates
 
 
-def parse_delta_db(out_file_name: str, output_cols, is_delta: bool) -> list[HitData]:
+def parse_delta_db(out_file_name: str, output_cols, db_client, scaling_factor, evalue_cutoff, is_delta: bool) -> list[HitData]:
     query_idx = int(output_cols["query"])
     hit_idx = int(output_cols["hit"])
     evalue_idx = int(output_cols["evalue"])
 
     if is_delta:
         out_file_name = out_file_name + "-delta"
-    hits = []
     with open(out_file_name, "r") as f:
-        for line in f:
-            if not line.startswith("#"):
-                result = line.strip().split()
-                hits.append(
-                    (
-                        result[query_idx],
-                        result[hit_idx],
-                        float(f"{float(result[evalue_idx]):.5}"),
-                        "\t".join([result[i] for i in range(len(result)) if i not in [query_idx, hit_idx, evalue_idx]]),
-                    )
-                )
-    return hits
+        while chunk := f.readlines(CHUNK_SIZE):
+            hits = []
+            for line in chunk:
+                if not line.startswith("#"):
+                    result = line.strip().split()
+                    evalue = float(result[evalue_idx])
+                    evalue *= scaling_factor
+                    if evalue <= evalue_cutoff:
+                        hits.append(
+                            (
+                                result[query_idx],
+                                result[hit_idx],
+                                float(f"{float(evalue):.5}"),
+                                "\t".join([result[i] for i in range(len(result)) if i not in [query_idx, hit_idx, evalue_idx]]),
+                            )
+                        )
+            db_client.insert_hits(hits)
 
 
 def write_updated_output(
@@ -254,8 +260,10 @@ def write_updated_output(
     evalue_cutoff: float,
     max_seqs: int,
     db_client: IevalueDB,
-    updated_delta_hits: dict[str, list[HitData]],
     output_cols,
+    path,
+    prev_data,
+    delta_data
 ) -> list[HitData]:
 
     query_idx = int(output_cols["query"])
@@ -264,42 +272,35 @@ def write_updated_output(
 
     out_file_name = out_file_name.split(".")[0] + ".m8"
     hits_to_keep = []
+    new_db_client = IevalueDB(path)
+    new_db_client.add_database_record(prev_data + delta_data)  # type: ignore
     with open(query_file_name, "r") as query_f, open(out_file_name, "w") as out_f:
+        hits = []
         to_print = ""
         for line in query_f:
             if line.startswith(">"):
                 query = line.strip()[1:]
 
-                # combine the new and old hits and keep the top <max_seqs>
-                # that have an evalue_cutoff <= <evalue_cutoff>
-                # breakpoint()
-                hits = updated_delta_hits[query]
-                previous_hits = db_client.get_query(query)
-                hits.extend(previous_hits)
-                hits = sorted(hits, key=lambda x: x[EVALUE_IDX])
-                if max_seqs > 0:
-                    hits = hits[:max_seqs]
+                hits = db_client.get_query(query, evalue_cutoff, max_seqs)
                 for hit in hits:
                     evalue = hit[EVALUE_IDX]
-                    if evalue <= evalue_cutoff:
-                        hits_to_keep.append(hit)
-                        # format for the text file
-                        the_rest = hit[THE_REST_IDX].split()
-                        # all_values = [query, hit[HIT_IDX]] + the_rest[:-1] + [f"{evalue:.3}"] + [the_rest[-1]]
+                    hits_to_keep.append(hit)
 
-                        all_values = []
-                        for i in range(len(the_rest) + 3):
-                            if i == query_idx:
-                                all_values.append(query)
-                            elif i == hit_idx:
-                                all_values.append(hit[HIT_IDX])
-                            elif i == evalue_idx:
-                                all_values.append(f"{evalue:.3}")
-                            else:
-                                all_values.append(the_rest.pop(0))
-
-                        to_print += "\t".join(all_values) + "\n"
-        out_f.write(to_print)
+                    # format for the text file
+                    the_rest = hit[THE_REST_IDX].split()
+                    all_values = []
+                    for i in range(len(the_rest) + 3):
+                        if i == query_idx:
+                            all_values.append(query)
+                        elif i == hit_idx:
+                            all_values.append(hit[HIT_IDX])
+                        elif i == evalue_idx:
+                            all_values.append(f"{evalue:.3}")
+                        else:
+                            all_values.append(the_rest.pop(0))
+                    to_print += "\t".join(all_values) + "\n"
+            out_f.write(to_print)
+            new_db_client.insert_hits(hits_to_keep)
 
     return hits_to_keep
 
@@ -355,35 +356,31 @@ def main(program_call: str, path: str) -> None:
         ]
 
     delta_data = get_delta_sizes(delta_parts, program, database_parts_function)
-
     if prev_residues:
         # update evalues from the old hits
-        delta_residue = sum([delta_db[RESIDUE_IDX] for delta_db in delta_data])
-        total_residues = prev_residues + delta_residue
+        delta_residues = sum([delta_db[RESIDUE_IDX] for delta_db in delta_data])
+        total_residues = prev_residues + delta_residues
         db_client.update_old_evalues(total_residues, prev_residues)
 
         # perform blast on just the new dbs
-        run_program(program_args, delta_dbs, is_delta=True, normalized_keywords=normalized_keywords)
+        # run_program(program_args, delta_dbs, is_delta=True, normalized_keywords=normalized_keywords)
         # breakpoint()
         # get the new results and add them to the database
-        delta_hits = parse_delta_db(out, output_cols, is_delta=True)
-        updated_delta_hits = calculate_updated_evalues(delta_hits, total_residues, delta_residue, evalue_cutoff)
-        hits_to_keep = write_updated_output(
-            query, out, evalue_cutoff, max_seqs, db_client, updated_delta_hits, output_cols
+        scaling_factor = (1.0 * total_residues) / (1.0 * delta_residues)
+        parse_delta_db(out, output_cols, db_client, scaling_factor, evalue_cutoff, is_delta=True)
+
+        # updated_delta_hits = calculate_updated_evalues(delta_hits, total_residues, delta_residues, evalue_cutoff)
+        write_updated_output(
+            query, out, evalue_cutoff, max_seqs, db_client, updated_delta_hits, output_cols, path, prev_data, delta_data
         )
-
         print("Output is ready, cleaning up database")
-
         db_client.close()
         db_client.del_old()
-        new_db_client = IevalueDB(path)
-        new_db_client.insert_hits(hits_to_keep)
-        new_db_client.add_database_record(prev_data + delta_data)  # type: ignore
 
     else:
-        run_program(program_args, delta_dbs, is_delta=False, normalized_keywords=normalized_keywords)
-        delta_hits = parse_delta_db(out, output_cols, is_delta=False)
-        db_client.insert_hits(delta_hits)
+        # run_program(program_args, delta_dbs, is_delta=False, normalized_keywords=normalized_keywords)
+        scaling_factor = 1
+        delta_hits = parse_delta_db(out, output_cols, db_client, scaling_factor, evalue_cutoff, is_delta=False)
         db_client.add_database_record(delta_data)
 
 

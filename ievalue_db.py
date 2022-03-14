@@ -25,8 +25,9 @@ HIT_PK_IDX: Final = 4
 
 
 class IevalueDB:
-    def __init__(self, db_path: str) -> None:
-        database = db_path + "ievalue_metadata.db"
+    def __init__(self, db_path: str, delta: bool = False) -> None:
+        database = db_path + "ievalue_metadata" + ("_delta" if delta else "") + ".db"
+        self.delta = delta
         self.database = database
         self._con = sqlite3.connect(database)
         self._con.execute("PRAGMA synchronous = OFF")
@@ -54,8 +55,12 @@ class IevalueDB:
     def get_all_hits(self) -> list[HitData]:
         return self._cur.execute("SELECT * from hits").fetchall()
 
-    def get_query(self, query: str) -> list[HitData]:
-        return self._cur.execute("SELECT * FROM hits WHERE query = ?", (query,)).fetchall()
+    def get_query(self, query: str, evalue_cutoff, max_seqs: int) -> list[HitData]:
+        # return self._cur.execute("SELECT * FROM hits WHERE query = ?", (query,)).fetchall()
+        if max_seqs == 0:
+            max_seqs = "NULL"
+        command = "SELECT * FROM hits WHERE query = ? AND evalue > evalue_cutoff ORDER BY evalue LIMIT ?"
+        return self._cur.execute(command, (query, max_seqs)).fetchall()
 
     def insert_hits(self, hits: list[HitData]) -> None:
         self._cur.executemany("INSERT INTO hits VALUES (?, ?, ?, ?)", hits)
@@ -104,6 +109,8 @@ class IevalueDB:
         os.remove(self.database)
 
     def close(self) -> None:
+        if self.delta:
+            os.rename("ievalue_metadata_delta.db", "ievalue_metadata.db")
         self._con.close()
 
     def __del__(self) -> None:
